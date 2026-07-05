@@ -1,0 +1,65 @@
+# LLM Provider 配置（共享仓库自带，仅主流公网预设）
+# 所有 provider 走 OpenAI 兼容接口。api_key 与额外鉴权头从环境变量读取，不硬编码。
+# role 由 agent 按"智能程度(tier)+家族(family)"自动指派（见 llm/model_catalog.py），
+# 用户也可在前端下拉手动覆盖主分析/红队。
+#
+# 私有/内网代理请放到 providers.local.yaml（已 gitignore），会自动合并到此处之上。
+# extra_headers 用于非标准鉴权（值为环境变量名，调用时注入）。
+
+providers:
+  deepseek-v4-pro:
+    label: "DeepSeek-V4-Pro"
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-v4-pro"
+    api_key_env: "DEEPSEEK_API_KEY"
+    roles: ["analyst", "reviewer"]
+  deepseek-v4-flash:
+    label: "DeepSeek-V4-Flash"
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-v4-flash"
+    api_key_env: "DEEPSEEK_API_KEY"
+    roles: ["red_team", "analyst"]
+  openai:
+    label: "OpenAI GPT-4o"
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-4o"
+    api_key_env: "OPENAI_API_KEY"
+    roles: ["analyst", "red_team"]
+  claude:
+    label: "Claude Sonnet"
+    base_url: "https://api.anthropic.com/v1"
+    model: "claude-sonnet-4-5"
+    api_key_env: "ANTHROPIC_API_KEY"
+    roles: ["reviewer", "analyst", "red_team"]
+  gemini:
+    label: "Gemini 2.5 Pro"
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+    model: "gemini-2.5-pro"
+    api_key_env: "GEMINI_API_KEY"
+    roles: ["reviewer", "analyst", "red_team"]
+  qwen:
+    label: "Qwen-Max"
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: "qwen-max"
+    api_key_env: "DASHSCOPE_API_KEY"
+    roles: ["analyst", "red_team"]
+  welm:
+    label: "WeLM"
+    base_url: "https://welm.weixin.qq.com/v1"
+    model: "welm-pro"
+    api_key_env: "WELM_API_KEY"
+    roles: ["red_team", "analyst"]
+  ollama:
+    label: "Ollama (本地)"
+    base_url: "http://localhost:11434/v1"
+    model: "qwen2.5:14b"
+    api_key_env: "OLLAMA_API_KEY"
+    roles: ["analyst", "red_team"]
+
+# role_defaults 留空 → 由 model_catalog.auto_assign_roles 按可用模型的 tier/family 自动指派
+# （analyst=次高非推理 / red_team=异源家族 / reviewer=最高 tier）。
+# 用户前端选的主分析/红队会覆盖。
+role_defaults: {}
+
+# fallback 顺序：首选不可用时降级（运行时按可用集合动态过滤）
+fallback_order: ["deepseek-v4-pro", "deepseek-v4-flash", "openai", "claude", "gemini", "qwen", "welm", "ollama"]

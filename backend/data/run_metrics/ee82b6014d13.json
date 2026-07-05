@@ -1,0 +1,202 @@
+{
+  "run_id": "ee82b6014d13",
+  "query": "阿里巴巴集团控股有限公司（阿里巴巴）",
+  "status": "done",
+  "created_at": "2026-07-01T12:33:25",
+  "updated_at": "2026-07-01T12:51:57",
+  "duration_ms": 1112000,
+  "stage_durations_ms": {
+    "scope": 15000,
+    "llm_call": 1064000,
+    "collect": 130000,
+    "analyze": 87000,
+    "falsify": 183000,
+    "refine": 197000,
+    "report": 625000
+  },
+  "data_as_of": "2026-06-30",
+  "data_sources_used": [
+    "sec_edgar",
+    "exa_search",
+    "general_search"
+  ],
+  "evidence_count": 64,
+  "insight_count": 12,
+  "trace_count": 284,
+  "collect_quality": {
+    "score": 92,
+    "status": "ok",
+    "issues": [
+      "证据时点覆盖不足，建议补充 published_at/as_of",
+      "分析维度覆盖不足，建议针对弱覆盖维度补搜"
+    ],
+    "evidence_count": 16,
+    "source_count": 14,
+    "source_types": [
+      "filing",
+      "web"
+    ],
+    "tier_counts": {
+      "1": 3,
+      "6": 11,
+      "3": 2
+    },
+    "authoritative_evidence_count": 5,
+    "fresh_evidence_count": 8,
+    "url_coverage": 1.0,
+    "title_coverage": 1.0,
+    "date_coverage": 0.5,
+    "section_coverage_ratio": 0.667,
+    "sections": {
+      "电商主业增长质量与货币化率演变": {
+        "covered": true,
+        "hits": 6,
+        "terms": [
+          "电商主业增长质量与货币化率演变",
+          "电商主业增长质量",
+          "电商主业增长",
+          "货币化率演变",
+          "电商主业"
+        ]
+      },
+      "云智能业务增速、盈利结构及AI落地": {
+        "covered": false,
+        "hits": 0,
+        "terms": [
+          "云智能业务增速、盈利结构及ai落地",
+          "云智能业务增速",
+          "盈利结构",
+          "云智能业",
+          "ai落地"
+        ]
+      },
+      "国际电商规模扩张与盈利平衡": {
+        "covered": true,
+        "hits": 1,
+        "terms": [
+          "国际电商规模扩张与盈利平衡",
+          "国际电商规模扩张",
+          "国际电商",
+          "盈利平衡",
+          "国际"
+        ]
+      },
+      "本地生活、菜鸟与数娱等板块减亏进展": {
+        "covered": false,
+        "hits": 0,
+        "terms": [
+          "本地生活、菜鸟与数娱等板块减亏进展",
+          "数娱等板块减亏进展",
+          "本地生活",
+          "菜鸟",
+          "本地"
+        ]
+      },
+      "竞争格局与护城河：应对拼多多、抖音电商的攻防": {
+        "covered": true,
+        "hits": 2,
+        "terms": [
+          "竞争格局与护城河：应对拼多多、抖音电商的攻防",
+          "护城河：应对拼多多",
+          "抖音电商的攻防",
+          "竞争格局",
+          "竞争"
+        ]
+      },
+      "资本回报、回购力度与估值安全边际": {
+        "covered": true,
+        "hits": 1,
+        "terms": [
+          "资本回报、回购力度与估值安全边际",
+          "估值安全边际",
+          "回购力度",
+          "资本回报",
+          "资本"
+        ]
+      }
+    },
+    "score_components": {
+      "volume": 25,
+      "diversity": 20,
+      "metadata": 17,
+      "authority": 20,
+      "section": 10
+    }
+  },
+  "quality_eval": {
+    "scores": {
+      "完整性": 2,
+      "逻辑性": 4,
+      "专业性": 4,
+      "数据性": 3,
+      "创新性": 4,
+      "实用性": 4,
+      "合规性": 4,
+      "可读性": 5
+    },
+    "total": 30,
+    "issues": [
+      "（完整性 2分）报告未按要求的分析维度覆盖“本地生活、菜鸟与数娱等板块减亏进展”以及“资本回报、回购力度与估值安全边际”的实质分析，缺失了电商、云、国际电商之外重要分部及股东回报策略的评估。建议补全所有要求的维度，或明确界定本次分析的范围边界。",
+      "（数据性 3分）在核心论证中，如“AI相关年化收入规模已攀升至约1200-1300亿元量级”及“淘天CMR增速大概率落在中低个位数区间”，均高度依赖基于“三成”这一模糊占比的线性推算，但未披露推算公式、关键假设及误差范围，存在将估算值当精确值使用的风险。建议对关键推导步骤进行量化拆解和敏感性分析。",
+      "（数据性 3分）报告中引用的竞品数据（如“拼多多2025年营收增速从两位数骤降至11%”、“华为云AI负载增长”）虽有脚注，但未提及具体数据口径、是否为估算值或公开财报数据，缺乏交叉验证的逻辑链条。建议补充竞品数据的精确口径与追溯路径。"
+    ],
+    "min_score": 2,
+    "round": 2,
+    "passed": false
+  },
+  "token_summary": {
+    "total_calls": 78,
+    "total_input": 174195,
+    "total_output": 115736,
+    "total_cost_usd": 0.1742,
+    "by_stage": {
+      "unknown": {
+        "calls": 1,
+        "input": 416,
+        "output": 292,
+        "cost_usd": 0.0004
+      },
+      "scope": {
+        "calls": 1,
+        "input": 941,
+        "output": 474,
+        "cost_usd": 0.0008
+      },
+      "collect": {
+        "calls": 3,
+        "input": 4975,
+        "output": 2680,
+        "cost_usd": 0.0043
+      },
+      "analyze": {
+        "calls": 1,
+        "input": 3187,
+        "output": 4250,
+        "cost_usd": 0.0055
+      },
+      "falsify": {
+        "calls": 59,
+        "input": 111993,
+        "output": 77371,
+        "cost_usd": 0.1151
+      },
+      "report": {
+        "calls": 13,
+        "input": 52683,
+        "output": 30669,
+        "cost_usd": 0.0481
+      }
+    }
+  },
+  "coherence_check": {},
+  "structure_repair_applied": false,
+  "diagnostics": [
+    {
+      "stage": "falsify",
+      "type": "diagnosis",
+      "title": "洞察证伪出错·降级",
+      "detail": "falsify阶段·电商行业正式迈入服务消费驱动阶段，非实物·模型输出解析失败：无法解析 LLM JSON 输出：{\n  \"challenges\": [\n    {\n      \"dimension\": \"temporal\",\n      \"severity\": \"none\",\n      \"challenge\": \"未发现时效问题。证据引用的是2026年6",
+      "ts": "2026-07-01T12:37:51"
+    }
+  ]
+}

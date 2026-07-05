@@ -1,0 +1,37 @@
+{
+  "_comment": "信源权威性 tier 识别的域名表。_guess_tier 按 regulator → filing → auth_media 顺序匹配。tier 值对应 schemas.SourceTier 枚举名。修改此表即可调整信源分级，无需改代码。",
+  "regulator": {
+    "tier": "THIRD_PARTY",
+    "comment": "监管机构/政府披露，最高权威性",
+    "domains": [
+      "sec.gov", "csrc.gov", "sse.com.cn", "szse.cn", "bse.cn",
+      "hkex.com", "gov.cn", "miit.gov.cn", "mnr.gov.cn",
+      "ndrc.gov.cn", "stats.gov.cn", "pbc.gov.cn",
+      "nfra.gov.cn", "mofcom.gov.cn", "customs.gov.cn",
+      "mee.gov.cn", "tax.gov", "irs.gov"
+    ]
+  },
+  "filing": {
+    "tier": "COMPANY_PR",
+    "comment": "交易所公告/定期报告披露平台",
+    "domains": [
+      "cninfo.com.cn",
+      "dataclouds.cninfo",
+      "hkexnews.hk"
+    ]
+  },
+  "auth_media": {
+    "tier": "THIRD_PARTY",
+    "comment": "权威财经媒体/研究机构/行业协会",
+    "domains": [
+      "reuters", "bloomberg", "wsj", "ft.com", "economist", "nikkei",
+      "barrons", "marketwatch", "cnbc",
+      "caixin", "yicai", "21jingji", "thepaper", "ce.cn",
+      "economic-observer", "eeo.com.cn",
+      "eastmoney.com", "dfcfw.com", "research.cicc.com", "hani.com",
+      "chyxx.com", "qianzhan.com", "iresearch.com", "analysys.cn",
+      "idc.com", "gartner", "canalys", "counterpoint",
+      "ssric.org", "ccfa.org.cn"
+    ]
+  }
+}

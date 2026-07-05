@@ -1,0 +1,187 @@
+{
+  "run_id": "ab02700edbc0",
+  "query": "拼多多",
+  "status": "done",
+  "created_at": "2026-07-01T13:28:27",
+  "updated_at": "2026-07-01T13:46:51",
+  "duration_ms": 1104000,
+  "stage_durations_ms": {
+    "scope": 10000,
+    "llm_call": 1044000,
+    "collect": 135000,
+    "analyze": 106000,
+    "falsify": 330000,
+    "refine": 324000,
+    "report": 479000
+  },
+  "data_as_of": "2026-06-30",
+  "data_sources_used": [
+    "sec_edgar",
+    "exa_search"
+  ],
+  "evidence_count": 107,
+  "insight_count": 14,
+  "trace_count": 432,
+  "collect_quality": {
+    "score": 95,
+    "status": "ok",
+    "issues": [],
+    "evidence_count": 42,
+    "source_count": 25,
+    "source_types": [
+      "filing",
+      "web"
+    ],
+    "tier_counts": {
+      "1": 4,
+      "6": 31,
+      "3": 3,
+      "5": 4
+    },
+    "authoritative_evidence_count": 7,
+    "fresh_evidence_count": 27,
+    "url_coverage": 1.0,
+    "title_coverage": 1.0,
+    "date_coverage": 0.643,
+    "section_coverage_ratio": 0.833,
+    "sections": {
+      "增长质量与用户生态": {
+        "covered": true,
+        "hits": 18,
+        "terms": [
+          "增长质量与用户生态",
+          "用户生态",
+          "增长质量",
+          "增长"
+        ]
+      },
+      "货币化率与盈利变现能力": {
+        "covered": false,
+        "hits": 0,
+        "terms": [
+          "货币化率与盈利变现能力",
+          "盈利变现能力",
+          "盈利变现",
+          "货币化率",
+          "货币"
+        ]
+      },
+      "Temu全球化扩张与效率": {
+        "covered": true,
+        "hits": 13,
+        "terms": [
+          "temu全球化扩张与效率",
+          "temu全球化扩张",
+          "temu",
+          "te",
+          "效率"
+        ]
+      },
+      "竞争格局与护城河": {
+        "covered": true,
+        "hits": 5,
+        "terms": [
+          "竞争格局与护城河",
+          "竞争格局",
+          "护城河",
+          "竞争"
+        ]
+      },
+      "监管与地缘政治风险": {
+        "covered": true,
+        "hits": 2,
+        "terms": [
+          "监管与地缘政治风险",
+          "地缘政治风险",
+          "监管与地",
+          "监管"
+        ]
+      },
+      "财务健康与估值锚定": {
+        "covered": true,
+        "hits": 4,
+        "terms": [
+          "财务健康与估值锚定",
+          "估值锚定",
+          "财务健康",
+          "财务"
+        ]
+      }
+    },
+    "score_components": {
+      "volume": 25,
+      "diversity": 20,
+      "metadata": 18,
+      "authority": 20,
+      "section": 12
+    }
+  },
+  "quality_eval": {
+    "scores": {
+      "完整性": 3,
+      "逻辑性": 4,
+      "专业性": 4,
+      "数据性": 2,
+      "创新性": 4,
+      "实用性": 4,
+      "合规性": 3,
+      "可读性": 4
+    },
+    "total": 28,
+    "issues": [
+      "数据性 2分：核心论证依赖的新拼姆经营数据完全缺失（分部收入、毛利率、复购率均未披露），导致'供应链护城河已形成'的判断停留在假设层面，无法验证。建议明确标注此类论断为待检验假设，并补充已公开电话会中是否有任何相关定量信息。",
+      "合规性 3分：全文大量引用脚注（如[^27][^35]等）但未给出任何具体来源说明，无法溯源验证数据真实性；此外，欧盟监管风险仅凭匈牙利单一判例便推断'商业模式否定'的连锁效应，存在以偏概全风险，应补充其他成员国同类执法信号或明确限定结论范围。",
+      "完整性 3分：对'增长质量与用户生态'维度分析不足，仅提及9.8亿活跃买家，缺乏获客成本、用户时长、复购率、下沉市场渗透变化等指标，削弱了对国内主站GMV见顶后增长可持续性的完整评估。建议补充用户生态关键指标的趋势分析。"
+    ],
+    "min_score": 2,
+    "round": 2,
+    "passed": false
+  },
+  "token_summary": {
+    "total_calls": 121,
+    "total_input": 287769,
+    "total_output": 177406,
+    "total_cost_usd": 0.2725,
+    "by_stage": {
+      "unknown": {
+        "calls": 1,
+        "input": 417,
+        "output": 388,
+        "cost_usd": 0.0005
+      },
+      "scope": {
+        "calls": 1,
+        "input": 937,
+        "output": 449,
+        "cost_usd": 0.0007
+      },
+      "collect": {
+        "calls": 2,
+        "input": 6119,
+        "output": 1055,
+        "cost_usd": 0.0028
+      },
+      "analyze": {
+        "calls": 1,
+        "input": 6471,
+        "output": 6931,
+        "cost_usd": 0.0094
+      },
+      "falsify": {
+        "calls": 104,
+        "input": 219193,
+        "output": 139437,
+        "cost_usd": 0.2122
+      },
+      "report": {
+        "calls": 12,
+        "input": 54632,
+        "output": 29146,
+        "cost_usd": 0.0469
+      }
+    }
+  },
+  "coherence_check": {},
+  "structure_repair_applied": false,
+  "diagnostics": []
+}

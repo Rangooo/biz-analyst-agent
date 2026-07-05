@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+*.env.local
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project specific
+backend/store/
+backend/goldens/
+backend/backend.pid
+backend/data/*.db
+backend/data/*.db-*
+goldens/
+memory/
+frontend/tsconfig.tsbuildinfo
+
+# WorkBuddy (keep .workbuddy/skills and .workbuddy/agents, exclude memory/logs)
+.workbuddy/memory/
+.workbuddy/logs/
+
+# Logs
+*.log
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Generated run metrics
+backend/data/run_metrics/*.json

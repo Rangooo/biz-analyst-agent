@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests that run the full demo pipeline (deselect with '-m not slow')",
+    "eval: marks deterministic evaluation/benchmark sanity tests (deselect with '-m not eval')",
+    "smoke: marks tests requiring a real LLM API key",
+]

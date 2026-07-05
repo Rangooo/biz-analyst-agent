@@ -1,0 +1,137 @@
+{
+  "run_id": "9f4e194e1bde",
+  "query": "奇富科技",
+  "status": "done",
+  "created_at": "2026-07-01T14:19:49",
+  "updated_at": "2026-07-01T14:19:56",
+  "duration_ms": 7000,
+  "stage_durations_ms": {
+    "scope": 0,
+    "collect": 1000,
+    "analyze": 1000,
+    "falsify": 2000,
+    "refine": 1000,
+    "report": 2000
+  },
+  "data_as_of": "2025-05-22",
+  "data_sources_used": [
+    "neodata",
+    "sec_edgar",
+    "general_search"
+  ],
+  "evidence_count": 13,
+  "insight_count": 4,
+  "trace_count": 81,
+  "collect_quality": {
+    "score": 85,
+    "status": "ok",
+    "issues": [
+      "分析维度覆盖不足，建议针对弱覆盖维度补搜"
+    ],
+    "evidence_count": 8,
+    "source_count": 7,
+    "source_types": [
+      "filing",
+      "financial_api",
+      "news",
+      "notice"
+    ],
+    "tier_counts": {
+      "1": 4,
+      "3": 1,
+      "5": 2,
+      "2": 1
+    },
+    "authoritative_evidence_count": 6,
+    "fresh_evidence_count": 8,
+    "url_coverage": 1.0,
+    "title_coverage": 1.0,
+    "date_coverage": 1.0,
+    "section_coverage_ratio": 0.6,
+    "sections": {
+      "规模与盈利质量": {
+        "covered": true,
+        "hits": 2,
+        "terms": [
+          "规模与盈利质量",
+          "盈利质量",
+          "规模与盈",
+          "规模",
+          "盈利"
+        ]
+      },
+      "资产质量真实性": {
+        "covered": false,
+        "hits": 0,
+        "terms": [
+          "资产质量真实性",
+          "资产质量",
+          "资产"
+        ]
+      },
+      "资金与息差": {
+        "covered": true,
+        "hits": 1,
+        "terms": [
+          "资金与息差",
+          "资金与息",
+          "资金",
+          "息差"
+        ]
+      },
+      "监管合规": {
+        "covered": true,
+        "hits": 1,
+        "terms": [
+          "监管合规",
+          "监管"
+        ]
+      },
+      "风控能力": {
+        "covered": false,
+        "hits": 0,
+        "terms": [
+          "风控能力",
+          "风控"
+        ]
+      }
+    },
+    "score_components": {
+      "volume": 16,
+      "diversity": 20,
+      "metadata": 20,
+      "authority": 20,
+      "section": 9
+    }
+  },
+  "quality_eval": {
+    "scores": {
+      "完整性": 4,
+      "逻辑性": 4,
+      "专业性": 4,
+      "数据性": 4,
+      "创新性": 3,
+      "实用性": 4,
+      "合规性": 5,
+      "可读性": 4
+    },
+    "total": 32,
+    "issues": [
+      "创新性(3分)：部分洞察为行业常识复述，独到分析增量可加强",
+      "数据性(4分)：行业级数据口径一致性可进一步核实"
+    ],
+    "min_score": 3,
+    "round": 1,
+    "passed": true
+  },
+  "token_summary": {
+    "total_calls": 0,
+    "total_input": 0,
+    "total_output": 0,
+    "total_cost_usd": 0,
+    "by_stage": {}
+  },
+  "coherence_check": {},
+  "structure_repair_applied": false,
+  "diagnostics": []
+}

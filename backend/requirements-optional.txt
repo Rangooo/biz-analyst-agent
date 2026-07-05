@@ -1,0 +1,4 @@
+# Optional semantic retrieval acceleration.
+# The code falls back to lightweight keyword/TF-IDF behavior when these packages
+# are not installed, so keep them out of the default install path.
+sentence-transformers
