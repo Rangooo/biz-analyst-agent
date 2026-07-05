@@ -24,6 +24,33 @@ class TestSearchBudget:
         assert orchestrator.MAX_DEBATE_QUERIES_PER_INSIGHT <= 1
 
 
+class TestTokenSummary:
+    def test_finalize_token_summary_persists_on_non_terminal_exit(self):
+        run = AnalysisRun(query="测试")
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.run = run
+
+        class Tracker:
+            def summary(self):
+                return {
+                    "total_calls": 1,
+                    "total_input": 120,
+                    "total_output": 80,
+                    "total_cost_usd": 0.001,
+                    "by_stage": {"report": {"calls": 1, "input": 120, "output": 80, "cost_usd": 0.001}},
+                    "by_role": {},
+                    "by_provider": {},
+                }
+
+        class FakeLLM:
+            token_tracker = Tracker()
+
+        orch.llm = FakeLLM()
+
+        assert orch._finalize_token_summary()["total_calls"] == 1
+        assert run.token_summary["by_stage"]["report"]["output"] == 80
+
+
 class TestSelectReportInsights:
     def test_all_refuted_selects_zero(self):
         run = AnalysisRun(query="测试", provider="deepseek")

@@ -961,6 +961,7 @@ class Orchestrator:
                 async for e in stage_fn():
                     yield e
                 if self.run.status == "needs_human":
+                    self._finalize_token_summary()
                     save_run(self.run)
                     return
                 self._save_checkpoint(stage)
@@ -970,6 +971,7 @@ class Orchestrator:
                                diag["summary"], **diag)
                 self.run.status = "needs_human"
                 self.run.error = diag["summary"]
+                self._finalize_token_summary()
                 self._save_checkpoint(stage)
                 return
 
@@ -992,6 +994,8 @@ class Orchestrator:
                 if decision == "escalate":
                     self.run.status = "needs_human"
                     self.run.error = diag["summary"]
+                    self._finalize_token_summary()
+                    self._save_checkpoint(stage)
                     return
                 # degrade：保留已产洞察，标记部分完成
 
@@ -999,8 +1003,7 @@ class Orchestrator:
             self.run.status = "done"
             self.run.checkpoint_stage = ""
             # P1.6: 输出 token 成本摘要
-            _ts = self.llm.token_tracker.summary()
-            self.run.token_summary = _ts
+            _ts = self._finalize_token_summary()
             if _ts["total_calls"] > 0:
                 yield self._ev("report", "token_summary", "Token 成本摘要",
                                 f"调用 {_ts['total_calls']} 次 · 输入 {_ts['total_input']} / 输出 {_ts['total_output']} · 估算 ${_ts['total_cost_usd']:.4f}",
@@ -1023,8 +1026,7 @@ class Orchestrator:
             yield self._ev("report", "done", "分析完成", f"共 {len(self.run.insights)} 条洞察")
         elif self.run.status != "needs_human":
             self.run.status = "partial"
-            _ts = self.llm.token_tracker.summary()
-            self.run.token_summary = _ts
+            _ts = self._finalize_token_summary()
             if _ts["total_calls"] > 0:
                 yield self._ev("report", "token_summary", "Token 成本摘要",
                                 f"调用 {_ts['total_calls']} 次 · 输入 {_ts['total_input']} / 输出 {_ts['total_output']} · 估算 ${_ts['total_cost_usd']:.4f}",
@@ -1047,6 +1049,12 @@ class Orchestrator:
             yield self._ev("report", "done", "部分完成",
                            f"证伪/报告阶段降级，已保留 {len(self.run.insights)} 条洞察")
         save_run(self.run)
+
+    def _finalize_token_summary(self) -> dict:
+        """Persist the token summary even when a run exits via needs_human."""
+        _ts = self.llm.token_tracker.summary()
+        self.run.token_summary = _ts
+        return _ts
 
     def _save_checkpoint(self, stage: str):
         """保存检查点到 SQLite，支持断点续跑。"""

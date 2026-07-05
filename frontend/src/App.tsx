@@ -19,6 +19,7 @@ import { Timeline } from "./components/Timeline";
 import { InsightCard } from "./components/InsightCard";
 import { ReportView } from "./components/ReportView";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { TokenCostPanel } from "./components/TokenCostPanel";
 
 const EXAMPLES = ["奇富科技", "Snowflake", "字节跳动", "中国新能源汽车行业", "DeepSeek"];
 
@@ -759,6 +760,12 @@ export default function App() {
       <div className="grid">
         {/* 左：画像 + 执行轨迹 */}
         <div className="panel">
+          {tokenSummary && (
+            <div className="run-observability">
+              <h2>运行指标</h2>
+              <TokenCostPanel summary={tokenSummary} />
+            </div>
+          )}
           {profile && (
             <div className="profile-card">
               <div className="name">{profile.name}</div>
@@ -824,7 +831,7 @@ export default function App() {
               insights.map((ins) => <InsightCard key={ins.id} insight={ins} />)
             )
           ) : narrativeMd ? (
-            <ReportView md={narrativeMd} query={query} runId={runId} asOf={dataAsOf} docMode insights={insights} financials={financials} evidencePool={evidencePool} qualityEval={qualityEval} tokenSummary={tokenSummary} industryMetrics={industryMetrics} revenueSegments={revenueSegments} peerFinancials={peerFinancials} />
+            <ReportView md={narrativeMd} query={query} runId={runId} asOf={dataAsOf} docMode insights={insights} financials={financials} evidencePool={evidencePool} qualityEval={qualityEval} industryMetrics={industryMetrics} revenueSegments={revenueSegments} peerFinancials={peerFinancials} />
           ) : (
             <div className="empty">完整分析文档将在报告阶段生成（含执行摘要、核心发现、风险展望）</div>
           )}

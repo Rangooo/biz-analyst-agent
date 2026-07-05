@@ -333,6 +333,14 @@ body {
 .profile-card .bm { font-size: 12px; color: var(--text-2); margin-top: 4px; }
 .kq { font-size: 12px; color: var(--text-2); margin-top: 8px; }
 .kq li { margin-bottom: 2px; }
+.run-observability {
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed var(--border);
+}
+.run-observability .token-card { margin-bottom: 0; }
+.run-observability .token-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.run-observability .token-splits { grid-template-columns: 1fr; }
 
 /* 轨迹时间线 */
 .timeline { max-height: 620px; overflow-y: auto; }
