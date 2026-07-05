@@ -147,6 +147,9 @@ class TestTokenTracker:
         assert s["total_cost_usd"] > 0
         assert "scope" in s["by_stage"]
         assert s["by_stage"]["scope"]["calls"] == 1
+        assert s["by_role"]["analyst"]["calls"] == 1
+        assert s["by_role"]["reviewer"]["output"] == 1000
+        assert s["by_provider"]["deepseek-chat"]["calls"] == 2
 
 
 class TestEvidenceIndex:

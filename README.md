@@ -281,6 +281,7 @@ biz-analyst-agent/
 - Strategy Card Evolution：任务结束后把采集/证伪/报告缺陷归因为可执行策略卡，下次同类任务自动应用。
 - 事实校验闭环：pipeline 内部 fact_check 提取断言并对照证据池验证，结果驱动报告迭代改进。eval_feedback 跨 run 传递泛化自知。
 - 评测驱动迭代：Report 阶段 quality_eval 循环（8 维度评分 + fact_check），不达标触发补证搜索 + 重写报告段落。
+- Token 成本面板：按阶段、角色和模型汇总调用次数、输入/输出 token 与估算成本，便于定位高成本环节。
 
 ---
 
@@ -336,7 +337,7 @@ APP_MODE=server  # 团队或服务器部署
 
 - `collect_quality`：采集阶段证据质量评分
 - `quality_eval`：报告阶段 8 维度质量评分
-- `token_summary`：模型调用次数、token 和成本
+- `token_summary`：模型调用次数、输入/输出 token、估算成本，以及按阶段/角色/模型拆分的成本结构
 - `diagnostics`：降级、异常摘要
 
 ---

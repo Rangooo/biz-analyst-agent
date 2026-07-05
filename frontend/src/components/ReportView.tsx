@@ -1,9 +1,130 @@
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Insight, Evidence, QualityEval, IndustryMetrics, RevenueSegments, PeerFinancialRow } from "../types";
+import { Insight, Evidence, QualityEval, IndustryMetrics, RevenueSegments, PeerFinancialRow, TokenBucket, TokenSummary } from "../types";
 import { DualAxisChart, QualityRadar, EvidenceTierChart, IndustryMetricsChart, PriceTrendChart, SegmentPieChart, PeerCompareChart } from "./Charts";
 
 type Fin = { period: string; revenue?: number | null; net_income?: number | null; rev_growth?: number | null; ni_growth?: number | null };
+
+const STAGE_LABEL: Record<string, string> = {
+  scope: "界定",
+  collect: "采集",
+  analyze: "分析",
+  falsify: "证伪",
+  refine: "补证",
+  report: "报告",
+  unknown: "未知",
+};
+
+const ROLE_LABEL: Record<string, string> = {
+  analyst: "主分析",
+  red_team: "红队",
+  reviewer: "终审",
+};
+
+function formatToken(n?: number): string {
+  const value = Number(n || 0);
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 10_000) return `${Math.round(value / 1000)}k`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return String(value);
+}
+
+function formatCost(n?: number): string {
+  const value = Number(n || 0);
+  if (value <= 0) return "$0";
+  if (value < 0.01) return `<$0.01`;
+  return `$${value.toFixed(2)}`;
+}
+
+function bucketRows(data?: Record<string, TokenBucket>, labels?: Record<string, string>) {
+  return Object.entries(data || {})
+    .map(([key, value]) => ({ key, label: labels?.[key] || key, ...value }))
+    .sort((a, b) => (b.cost_usd || 0) - (a.cost_usd || 0));
+}
+
+function TokenCostPanel({ summary }: { summary?: TokenSummary }) {
+  const hasUsage = !!summary && Number(summary.total_calls || 0) > 0;
+  const stageRows = bucketRows(summary?.by_stage, STAGE_LABEL);
+  const roleRows = bucketRows(summary?.by_role, ROLE_LABEL);
+  const providerRows = bucketRows(summary?.by_provider);
+  const maxStageCost = Math.max(...stageRows.map((r) => r.cost_usd || 0), 0);
+  const topStage = stageRows[0];
+  const topRole = roleRows[0];
+
+  if (!hasUsage) {
+    return (
+      <div className="token-card token-card-empty">
+        <div className="token-title">Token 成本</div>
+        <div className="token-empty">当前模型或代理未返回 usage，本次运行无法统计 token 与估算成本。</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="token-card">
+      <div className="token-head">
+        <div>
+          <div className="token-title">Token 成本</div>
+          <div className="token-sub">
+            {topStage && `最耗费阶段：${topStage.label}`}
+            {topStage && topRole && " · "}
+            {topRole && `最耗费角色：${topRole.label}`}
+          </div>
+        </div>
+        <div className="token-cost">{formatCost(summary.total_cost_usd)}</div>
+      </div>
+
+      <div className="token-kpis">
+        <div><span>调用</span><b>{summary.total_calls}</b></div>
+        <div><span>输入</span><b>{formatToken(summary.total_input)}</b></div>
+        <div><span>输出</span><b>{formatToken(summary.total_output)}</b></div>
+      </div>
+
+      {stageRows.length > 0 && (
+        <div className="token-section">
+          <div className="token-section-title">按阶段</div>
+          {stageRows.map((row) => {
+            const pct = maxStageCost > 0 ? Math.max(4, Math.round((row.cost_usd / maxStageCost) * 100)) : 4;
+            return (
+              <div className="token-row" key={row.key}>
+                <div className="token-row-label">{row.label}</div>
+                <div className="token-row-track">
+                  <div className="token-row-fill" style={{ width: `${pct}%` }} />
+                  <span>{row.calls} 次 · {formatToken(row.input + row.output)} · {formatCost(row.cost_usd)}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {(roleRows.length > 0 || providerRows.length > 0) && (
+        <div className="token-splits">
+          {roleRows.length > 0 && (
+            <div>
+              <div className="token-section-title">按角色</div>
+              {roleRows.map((row) => (
+                <div className="token-chip" key={row.key}>
+                  <span>{row.label}</span><b>{formatCost(row.cost_usd)}</b>
+                </div>
+              ))}
+            </div>
+          )}
+          {providerRows.length > 0 && (
+            <div>
+              <div className="token-section-title">按模型</div>
+              {providerRows.slice(0, 4).map((row) => (
+                <div className="token-chip" key={row.key}>
+                  <span>{row.label}</span><b>{formatCost(row.cost_usd)}</b>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // 引用克制渲染：[证据N]/[^N]/[N] → 可点击上标跳文末证据条目；不动 [^N]: 脚注定义
 // remarkGfm 启用 GFM 表格/删除线/任务列表——react-markdown v9 默认不支持表格，必须加此插件
@@ -178,6 +299,7 @@ export function ReportView({
   financials = [],
   evidencePool = [],
   qualityEval,
+  tokenSummary,
   industryMetrics,
   revenueSegments,
   peerFinancials = [],
@@ -191,6 +313,7 @@ export function ReportView({
   financials?: Fin[];
   evidencePool?: Evidence[];
   qualityEval?: QualityEval;
+  tokenSummary?: TokenSummary;
   industryMetrics?: IndustryMetrics | null;
   revenueSegments?: RevenueSegments | null;
   peerFinancials?: PeerFinancialRow[];
@@ -251,6 +374,9 @@ export function ReportView({
       {docMode && qualityEval && qualityEval.scores && Object.keys(qualityEval.scores).length >= 3 && (
         <QualityRadar qa={qualityEval} />
       )}
+
+      {/* 可视化 2a：Token 成本与调用分布 */}
+      {docMode && <TokenCostPanel summary={tokenSummary} />}
 
       {/* 可视化 3：证据来源分布（借鉴 FinSight 视觉增强） */}
       {evidencePool.length > 0 && <EvidenceTierChart evidence={evidencePool} />}

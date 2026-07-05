@@ -61,24 +61,41 @@ class TokenTracker:
 
     def summary(self) -> dict:
         if not self._records:
-            return {"total_calls": 0, "total_input": 0, "total_output": 0, "total_cost_usd": 0, "by_stage": {}}
+            return {
+                "total_calls": 0,
+                "total_input": 0,
+                "total_output": 0,
+                "total_cost_usd": 0,
+                "by_stage": {},
+                "by_role": {},
+                "by_provider": {},
+            }
         total_in = sum(r["input_tokens"] for r in self._records)
         total_out = sum(r["output_tokens"] for r in self._records)
         total_cost = sum(r["cost_usd"] for r in self._records)
+
+        def add(bucket: dict[str, dict], key: str, record: dict) -> None:
+            if key not in bucket:
+                bucket[key] = {"calls": 0, "input": 0, "output": 0, "cost_usd": 0}
+            bucket[key]["calls"] += 1
+            bucket[key]["input"] += record["input_tokens"]
+            bucket[key]["output"] += record["output_tokens"]
+            bucket[key]["cost_usd"] = round(bucket[key]["cost_usd"] + record["cost_usd"], 4)
+
         by_stage: dict[str, dict] = {}
+        by_role: dict[str, dict] = {}
+        by_provider: dict[str, dict] = {}
         for r in self._records:
-            s = r["stage"]
-            if s not in by_stage:
-                by_stage[s] = {"calls": 0, "input": 0, "output": 0, "cost_usd": 0}
-            by_stage[s]["calls"] += 1
-            by_stage[s]["input"] += r["input_tokens"]
-            by_stage[s]["output"] += r["output_tokens"]
-            by_stage[s]["cost_usd"] = round(by_stage[s]["cost_usd"] + r["cost_usd"], 4)
+            add(by_stage, r["stage"], r)
+            add(by_role, r["role"], r)
+            add(by_provider, r["provider"], r)
         return {
             "total_calls": len(self._records),
             "total_input": total_in, "total_output": total_out,
             "total_cost_usd": round(total_cost, 4),
             "by_stage": by_stage,
+            "by_role": by_role,
+            "by_provider": by_provider,
         }
 
 

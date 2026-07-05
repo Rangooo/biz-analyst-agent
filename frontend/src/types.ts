@@ -92,6 +92,23 @@ export interface QualityEval {
   passed?: boolean;
 }
 
+export interface TokenBucket {
+  calls: number;
+  input: number;
+  output: number;
+  cost_usd: number;
+}
+
+export interface TokenSummary {
+  total_calls: number;
+  total_input: number;
+  total_output: number;
+  total_cost_usd: number;
+  by_stage?: Record<string, TokenBucket>;
+  by_role?: Record<string, TokenBucket>;
+  by_provider?: Record<string, TokenBucket>;
+}
+
 export interface IndustryMetricRow {
   metric: string;      // 指标名称（如"稀土开采总量指标"）
   unit: string;        // 单位（如"吨"）
@@ -159,6 +176,7 @@ export interface AnalysisRun {
   peer_financials?: PeerFinancialRow[];
   data_gaps?: DataGap[];
   quality_eval?: QualityEval;
+  token_summary?: TokenSummary;
   data_sources_used: string[];
   data_as_of: string;
   error: string;

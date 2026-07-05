@@ -12,6 +12,7 @@ import {
   QualityEval,
   RevenueSegments,
   RunSummary,
+  TokenSummary,
   TraceEvent,
 } from "./types";
 import { Timeline } from "./components/Timeline";
@@ -52,6 +53,7 @@ export default function App() {
   const [financials, setFinancials] = useState<{ period: string; revenue?: number | null; net_income?: number | null; rev_growth?: number | null; ni_growth?: number | null }[]>([]);
   const [evidencePool, setEvidencePool] = useState<Evidence[]>([]);
   const [qualityEval, setQualityEval] = useState<QualityEval | undefined>(undefined);
+  const [tokenSummary, setTokenSummary] = useState<TokenSummary | undefined>(undefined);
   const [industryMetrics, setIndustryMetrics] = useState<IndustryMetrics | null>(null);
   const [revenueSegments, setRevenueSegments] = useState<RevenueSegments | null>(null);
   const [peerFinancials, setPeerFinancials] = useState<PeerFinancialRow[]>([]);
@@ -190,6 +192,7 @@ export default function App() {
     setFinancials(run.financials || []);
     setEvidencePool(run.evidence_pool || []);
     setQualityEval(run.quality_eval);
+    setTokenSummary(run.token_summary);
     setIndustryMetrics(run.industry_metrics || null);
     setRevenueSegments(run.revenue_segments || null);
     setPeerFinancials(run.peer_financials || []);
@@ -243,6 +246,7 @@ export default function App() {
     setFinancials([]);
     setEvidencePool([]);
     setQualityEval(undefined);
+    setTokenSummary(undefined);
     setIndustryMetrics(null);
     setDataAsOf("");
     setStatus("");
@@ -820,7 +824,7 @@ export default function App() {
               insights.map((ins) => <InsightCard key={ins.id} insight={ins} />)
             )
           ) : narrativeMd ? (
-            <ReportView md={narrativeMd} query={query} runId={runId} asOf={dataAsOf} docMode insights={insights} financials={financials} evidencePool={evidencePool} qualityEval={qualityEval} industryMetrics={industryMetrics} revenueSegments={revenueSegments} peerFinancials={peerFinancials} />
+            <ReportView md={narrativeMd} query={query} runId={runId} asOf={dataAsOf} docMode insights={insights} financials={financials} evidencePool={evidencePool} qualityEval={qualityEval} tokenSummary={tokenSummary} industryMetrics={industryMetrics} revenueSegments={revenueSegments} peerFinancials={peerFinancials} />
           ) : (
             <div className="empty">完整分析文档将在报告阶段生成（含执行摘要、核心发现、风险展望）</div>
           )}
