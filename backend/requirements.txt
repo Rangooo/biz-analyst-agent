@@ -14,3 +14,7 @@ xhtml2pdf>=0.2.16
 # PDF import / financial report parsing
 pdfplumber>=0.11
 python-multipart>=0.0.9
+
+# Test runner used by CI and backend/run_all_tests.py
+pytest>=8.0
+pytest-asyncio>=0.23
