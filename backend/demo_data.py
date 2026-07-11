@@ -333,7 +333,7 @@ def demo_chat_json(messages, provider=None, role="analyst", **kw):
         same = "同源审查降级" in text
         return {"content": demo_narrative_core(name or "该公司", same)}
 
-    # Meta Reflection（四层记忆④：元反思）
+    # Reflection 学习环：元反思
     if "元反思分析师" in sys_text:
         return {
             "missed_challenges": [

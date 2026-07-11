@@ -1,14 +1,19 @@
 """
-四层长期记忆系统 —— Industry RAG / Challenge Policy Store / Episodic Memory / Meta Reflection.
+三类持久化存储 + Reflection 学习环。
 
-设计原则：
-- Industry RAG:       任务前读，模式积累足够才写
-- Challenge Policies: 每次挑战前读，由 Meta Reflection 更新
-- Episodic Memory:    每次任务写，很少读
-- Meta Reflection:    每次任务后读（历史反思）+ 写（新反思）
+持久化存储：
+- Experience:   每次任务写（run 摘要 + eval 反馈），Reflection 时读
+- Domain:       行业知识框架，Reflection 蒸馏后写，Scope 阶段读
+- Behavior:     采集/证伪/报告策略，统一 trigger→action→success_rate
+
+Reflection 是瞬态学习过程，不独立持久化——run 结束后蒸馏直接写入 Domain + Behavior。
 
 存储：JSON 文件，无 DB 依赖，可直接 inspect。
-线程安全：读取用缓存 + 锁，写入用原子替换。
+线程安全：所有写操作在 _lock 内完成完整的读-改-写事务，防并发丢更新。
+
+⚠ 部署边界：threading.RLock 仅保证单进程内线程安全。多 worker / 多进程部署
+（如 uvicorn --workers N）共写同一文件仍可能丢更新。进入多进程部署前应迁移到
+SQLite 或增加跨进程文件锁（fcntl/msvcrt）。当前单进程本地部署无此问题。
 """
 from __future__ import annotations
 
@@ -19,20 +24,54 @@ import re
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 _MEM_DIR = Path(__file__).resolve().parent.parent / "memory"
-_INDUSTRY_RAG = _MEM_DIR / "industry_rag" / "playbooks.json"
-_CHALLENGE_POLICIES = _MEM_DIR / "challenge_policies.json"
-_STRATEGY_CARDS = _MEM_DIR / "strategy_cards.json"
-_EPISODIC_DIR = _MEM_DIR / "episodic" / "runs"
-_META_REFLECTION = _MEM_DIR / "meta_reflection" / "reflections.json"
-_EVAL_FEEDBACK = _MEM_DIR / "eval_feedback.json"
+
+# ---- 持久化文件路径 ----
+_EXPERIENCE = _MEM_DIR / "experience.json"
+_DOMAIN = _MEM_DIR / "domain.json"
+_BEHAVIOR = _MEM_DIR / "behavior.json"
 
 _ALLOWED_STRATEGY_STAGES = {"scope", "collect", "analyze", "falsify", "report"}
 
 _lock = threading.RLock()
 _cache: dict[str, Any] = {}
+
+# ---- 默认初始结构 ----
+_DEFAULTS: dict[Path, dict] = {
+    _EXPERIENCE: {"runs": [], "eval_feedbacks": []},
+    _DOMAIN: {"generic": {}},
+    _BEHAVIOR: {"policies": [], "strategies": {"active": [], "pending": [], "rejected": []}},
+}
+
+
+def ensure_initialized():
+    """确保存储目录和文件存在。首次启动时自动调用。
+
+    如果 domain.json 不存在但 domain.json.example 存在，从模板复制。
+    其余文件不存在时用空初始结构创建。
+    """
+    _MEM_DIR.mkdir(parents=True, exist_ok=True)
+    # domain.json: 优先从 example 复制
+    if not _DOMAIN.exists():
+        example = _MEM_DIR / "domain.json.example"
+        if example.exists():
+            import shutil
+            shutil.copy2(example, _DOMAIN)
+        else:
+            _DOMAIN.write_text(
+                json.dumps(_DEFAULTS[_DOMAIN], ensure_ascii=False, indent=2),
+                encoding="utf-8")
+    for path in (_EXPERIENCE, _BEHAVIOR):
+        if not path.exists():
+            path.write_text(
+                json.dumps(_DEFAULTS[path], ensure_ascii=False, indent=2),
+                encoding="utf-8")
+
+
+# 模块加载时自动初始化
+ensure_initialized()
 
 
 def _now() -> str:
@@ -44,7 +83,7 @@ def _today() -> str:
 
 
 def _load_json(path: Path) -> dict | list:
-    """线程安全加载 JSON（带缓存）。文件不存在返回空 dict。"""
+    """线程安全加载 JSON（带缓存）。文件不存在返回空 dict。只用于只读场景。"""
     key = str(path)
     if key in _cache:
         return _cache[key]
@@ -62,36 +101,184 @@ def _load_json(path: Path) -> dict | list:
         return data
 
 
-def _invalidate(path: Path):
-    """写后清缓存，下次读重新加载。"""
-    key = str(path)
-    with _lock:
-        _cache.pop(key, None)
+def _load_fresh(path: Path) -> dict | list:
+    """锁内读取：绕过缓存从磁盘重读。调用方必须已持有 _lock。"""
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
-def _atomic_write(path: Path, data):
-    """原子写入 JSON（先写临时文件再 rename，防写一半崩溃）。"""
+def _atomic_write_locked(path: Path, data):
+    """锁内原子写入。调用方必须已持有 _lock。写后刷新缓存。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
-    _invalidate(path)
+    _cache[str(path)] = data
 
 
-# ============ 1. Industry RAG ============
+def _transact(path: Path, mutator: Callable[[dict | list], None]):
+    """对 path 执行完整的读-改-写事务，全程持锁。
+
+    mutator 接收从磁盘新读取的 data 对象，就地修改它。
+    事务完成后自动原子写回并刷新缓存。
+    """
+    with _lock:
+        data = _load_fresh(path)
+        if not isinstance(data, dict):
+            data = {}
+        mutator(data)
+        _atomic_write_locked(path, data)
+
+
+def _invalidate(path: Path):
+    """清缓存。"""
+    with _lock:
+        _cache.pop(str(path), None)
+
+
+# 兼容旧调用：只读场景仍可用
+def _atomic_write(path: Path, data):
+    """原子写入 JSON（兼容桩，写操作优先用 _transact）。"""
+    with _lock:
+        _atomic_write_locked(path, data)
+
+
+# ================================================================
+#  1. Experience Memory — 历史任务 + 评测反馈
+# ================================================================
+# 合并原 episodic/runs/*.json + eval_feedback.json
+# 结构: {"runs": [...], "eval_feedbacks": [...]}
+
+def save_episodic(run_summary: dict):
+    """追加一次任务的执行摘要。
+
+    Write: 每次任务完成后（Report 阶段）
+    Read:  Reflection 需要历史对比时
+    """
+    def _mutate(data):
+        runs = data.setdefault("runs", [])
+        run_summary["timestamp"] = _now()
+        runs.append(run_summary)
+        if len(runs) > 100:
+            data["runs"] = runs[-100:]
+    _transact(_EXPERIENCE, _mutate)
+
+
+def load_recent_episodes(n: int = 5) -> list[dict]:
+    """加载最近 N 次任务日志（供 Reflection 参考）。"""
+    data = _load_json(_EXPERIENCE)
+    if not isinstance(data, dict):
+        return []
+    runs = data.get("runs", [])
+    if not isinstance(runs, list):
+        return []
+    return runs[-n:] if len(runs) >= n else list(runs)
+
+
+def _normalize_query_key(query: str) -> str:
+    """规范化 query 用于模糊匹配：去标点、去空格。"""
+    q = re.sub(r"[\s\u3000]+", "", (query or "").lower())
+    q = re.sub(r"[（()）,，。.!！?？·、/\\\"'`]+", "", q)
+    return q.strip()[:80]
+
+
+def save_eval_feedback(query: str, feedback: dict) -> None:
+    """存储一次评测发现，供下次同主题 pipeline 运行时读取。"""
+    try:
+        def _mutate(data):
+            feedbacks = data.setdefault("eval_feedbacks", [])
+            entry = {
+                "query": (query or "").strip()[:120],
+                "query_key": _normalize_query_key(query),
+                "timestamp": _now(),
+            }
+            entry.update(feedback)
+            feedbacks.append(entry)
+            if len(feedbacks) > 50:
+                data["eval_feedbacks"] = feedbacks[-50:]
+        _transact(_EXPERIENCE, _mutate)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_eval_feedback(query: str, limit: int = 3) -> list[dict]:
+    """加载与 query 相关的历史评测发现。"""
+    try:
+        data = _load_json(_EXPERIENCE)
+        if not isinstance(data, dict):
+            return []
+        feedbacks = data.get("eval_feedbacks", [])
+        if not isinstance(feedbacks, list) or not feedbacks:
+            return []
+        qk = _normalize_query_key(query)
+        if not qk:
+            return []
+        matched = [
+            f for f in feedbacks
+            if isinstance(f, dict)
+            and (qk in (f.get("query_key") or "")
+                 or (f.get("query_key") or "") in qk)
+        ]
+        matched.sort(key=lambda f: f.get("timestamp", ""), reverse=True)
+        return list(reversed(matched[:limit]))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def generalize_eval_weaknesses(past_evals: list[dict]) -> list[str]:
+    """从历史评测中泛化提取 Agent 常见不足模式。"""
+    if not past_evals:
+        return []
+    weakness_counts: dict[str, int] = {}
+    for pe in past_evals:
+        if not isinstance(pe, dict):
+            continue
+        gaps = pe.get("gaps") or []
+        fact = pe.get("fact_score")
+        structure = pe.get("structure_score")
+        coverage = pe.get("coverage_score")
+        timeliness = pe.get("timeliness_score")
+        gaps_text = " ".join(str(g) for g in gaps) if isinstance(gaps, list) else str(gaps)
+
+        if any(k in gaps_text for k in ("结构", "篇幅", "治理", "structure")):
+            weakness_counts["结构松散，篇幅需要治理"] = weakness_counts.get("结构松散，篇幅需要治理", 0) + 1
+        if fact is not None and fact < 50:
+            weakness_counts["事实断言无法从证据验证"] = weakness_counts.get("事实断言无法从证据验证", 0) + 1
+        if any(k in gaps_text for k in ("遗漏", "覆盖", "coverage", "维度")):
+            weakness_counts["分析维度覆盖不全"] = weakness_counts.get("分析维度覆盖不全", 0) + 1
+        if coverage is not None and coverage < 0.6:
+            weakness_counts["关键问题遗漏检测分数低"] = weakness_counts.get("关键问题遗漏检测分数低", 0) + 1
+        if any(k in gaps_text for k in ("数据", "推算", "估算", "口径", "验证")):
+            weakness_counts["数据推算不严谨，估算值当精确值"] = weakness_counts.get("数据推算不严谨，估算值当精确值", 0) + 1
+        if any(k in gaps_text for k in ("过时", "时效", "timeliness", "旧")):
+            weakness_counts["引用数据过时"] = weakness_counts.get("引用数据过时", 0) + 1
+        if timeliness is not None and timeliness < 0.5:
+            weakness_counts["时效性评分低"] = weakness_counts.get("时效性评分低", 0) + 1
+
+    sorted_weaknesses = sorted(weakness_counts.items(), key=lambda x: x[1], reverse=True)
+    return [w for w, _ in sorted_weaknesses]
+
+
+# ================================================================
+#  2. Domain Memory — 行业分析框架
+# ================================================================
+# 合并原 industry_rag/playbooks.json（去掉空的 by_industry/ 子目录）
+# 结构: {"generic": {...}, "by_template_key": {...}}
 
 def load_industry_rag(template_key: str = "") -> dict:
-    """加载行业知识库（playbooks）。优先按 template_key 匹配，否则用 generic。
+    """加载行业知识库。优先按 template_key 匹配，否则用 generic。
 
     Read: 任务前（Scope 阶段）
-    Write: 模式积累足够后（Meta Reflection 触发）
     """
-    rag = _load_json(_INDUSTRY_RAG)
+    rag = _load_json(_DOMAIN)
     result = dict(rag.get("generic", {}))
     if template_key:
         by_key = rag.get("by_template_key", {})
         specific = by_key.get(template_key, {})
-        # 深合并：specific 覆盖 generic 同名键
         for k, v in specific.items():
             if k in result and isinstance(result[k], dict) and isinstance(v, dict):
                 merged = dict(result[k])
@@ -103,160 +290,136 @@ def load_industry_rag(template_key: str = "") -> dict:
 
 
 def update_industry_rag(template_key: str, playbook_type: str, items: list[dict]):
-    """向 Industry RAG 追加新模式（由 Meta Reflection 调用）。
-
-    template_key: 模板 key（如 fintech_lending / internet_saas / generic）
-    playbook_type: 追加目标（如 failure_playbook / industry_playbook.common_pitfalls）
-    items: 要追加的模式列表，每个是 dict（如 {pattern, trap, fix}）
-
-    自动去重：已有相同 pattern 的条目不重复追加。
-    """
+    """向 Domain Memory 追加新行业模式（由 Reflection 调用）。"""
     if not items:
         return
-    rag = _load_json(_INDUSTRY_RAG)
-    # 确保路径存在
-    by_tk = rag.setdefault("by_template_key", {})
-    tpl = by_tk.setdefault(template_key or "generic", {})
-    # failure_playbook 是列表，直接追加
-    if playbook_type in ("failure_playbook", "source_playbook"):
-        target = tpl.setdefault(playbook_type, [])
-        if not isinstance(target, list):
-            target = []
-            tpl[playbook_type] = target
-        existing_patterns = {str(item.get("pattern", "")) for item in target if isinstance(item, dict)}
-        for item in items:
-            if isinstance(item, dict) and str(item.get("pattern", "")) not in existing_patterns:
-                target.append(item)
-                existing_patterns.add(str(item.get("pattern", "")))
-    # industry_playbook 是 dict，往 common_pitfalls 列表追加
-    elif playbook_type == "industry_playbook":
-        ip = tpl.setdefault("industry_playbook", {})
-        if isinstance(ip, dict):
-            pitfalls = ip.setdefault("common_pitfalls", [])
-            if isinstance(pitfalls, list):
-                for item in items:
-                    text = str(item.get("pattern", item.get("trap", "")))
-                    if text and text not in pitfalls:
-                        pitfalls.append(text)
-    _atomic_write(_INDUSTRY_RAG, rag)
+    def _mutate(rag):
+        by_tk = rag.setdefault("by_template_key", {})
+        tpl = by_tk.setdefault(template_key or "generic", {})
+        if playbook_type in ("failure_playbook", "source_playbook"):
+            target = tpl.setdefault(playbook_type, [])
+            if not isinstance(target, list):
+                target = []
+                tpl[playbook_type] = target
+            existing_patterns = {str(item.get("pattern", "")) for item in target if isinstance(item, dict)}
+            for item in items:
+                if isinstance(item, dict) and str(item.get("pattern", "")) not in existing_patterns:
+                    target.append(item)
+                    existing_patterns.add(str(item.get("pattern", "")))
+        elif playbook_type == "industry_playbook":
+            ip = tpl.setdefault("industry_playbook", {})
+            if isinstance(ip, dict):
+                pitfalls = ip.setdefault("common_pitfalls", [])
+                if isinstance(pitfalls, list):
+                    for item in items:
+                        text = str(item.get("pattern", item.get("trap", "")))
+                        if text and text not in pitfalls:
+                            pitfalls.append(text)
+    _transact(_DOMAIN, _mutate)
 
 
-# ============ 2. Challenge Policy Store ============
+# ================================================================
+#  3. Behavior Memory — 统一策略库
+# ================================================================
+# 合并原 challenge_policies.json + strategy_cards.json
+# 结构: {"policies": [...], "strategies": {"active": [], "pending": [], "rejected": []}}
+# policies: 证伪阶段挑战策略（trigger→search_strategy→success_rate）
+# strategies: 各阶段行为策略卡（trigger→action→effect_score）
+
+# ---- 3a. Challenge Policies ----
 
 def load_challenge_policies() -> list[dict]:
-    """加载全部挑战策略。
-
-    Read: 每次挑战前（Falsify 阶段）
-    Write: 由 Meta Reflection 更新
-    """
-    store = _load_json(_CHALLENGE_POLICIES)
+    """加载全部挑战策略。Read: 每次挑战前（Falsify 阶段）。"""
+    store = _load_json(_BEHAVIOR)
+    if not isinstance(store, dict):
+        return []
     policies = store.get("policies", [])
     return policies if isinstance(policies, list) else []
 
 
 def match_policies(claim: str, reasoning: str, policies: list[dict] | None = None) -> list[dict]:
-    """根据论点内容匹配相关挑战策略，返回按 priority 排序的策略列表。
-
-    匹配逻辑：策略的 trigger 关键词出现在 claim/reasoning 中则匹配。
-    返回的每条策略附带 search_strategy 和 evidence_preference，供红队参考。
-    """
+    """根据论点内容匹配相关挑战策略。"""
     if policies is None:
         policies = load_challenge_policies()
     text = (claim + " " + reasoning).lower()
     matched = []
     for p in policies:
         trigger = str(p.get("trigger", "")).lower()
-        # 简单关键词匹配：trigger 中的关键名词出现在 claim 中
         keywords = [w.strip() for w in trigger.replace(",", " ").replace("，", " ").split() if len(w.strip()) > 2]
         if any(kw in text for kw in keywords):
             matched.append(p)
-    # 按 priority 排序
     pri_order = {"high": 0, "medium": 1, "low": 2}
     matched.sort(key=lambda p: pri_order.get(p.get("priority", "medium"), 1))
     return matched
 
 
 def update_policy_success(policy_id: str, succeeded: bool):
-    """更新策略的历史成功率（每次挑战后调用）。
-
-    succeeded=True: 该策略的挑战发现了实际问题（severity high/medium）
-    succeeded=False: 该策略的挑战未发现问题
-    """
-    store = _load_json(_CHALLENGE_POLICIES)
-    policies = store.get("policies", [])
-    for p in policies:
-        if p.get("id") == policy_id:
-            p["times_applied"] = int(p.get("times_applied", 0)) + 1
-            if succeeded:
-                p["times_succeeded"] = int(p.get("times_succeeded", 0)) + 1
-            applied = p["times_applied"]
-            succeeded_n = p["times_succeeded"]
-            p["historical_success_rate"] = round(succeeded_n / applied, 3) if applied > 0 else 0.0
-            p["last_updated"] = _now()
-            break
-    _atomic_write(_CHALLENGE_POLICIES, store)
+    """更新策略的历史成功率（每次挑战后调用）。"""
+    def _mutate(store):
+        policies = store.get("policies", [])
+        for p in policies:
+            if p.get("id") == policy_id:
+                p["times_applied"] = int(p.get("times_applied", 0)) + 1
+                if succeeded:
+                    p["times_succeeded"] = int(p.get("times_succeeded", 0)) + 1
+                applied = p["times_applied"]
+                succeeded_n = p["times_succeeded"]
+                p["historical_success_rate"] = round(succeeded_n / applied, 3) if applied > 0 else 0.0
+                p["last_updated"] = _now()
+                break
+    _transact(_BEHAVIOR, _mutate)
 
 
 def apply_policy_updates(updates: list[dict]):
-    """批量应用策略更新（由 Meta Reflection 调用）。
-
-    每条 update: {action: "add"/"update", policy: {...}} 或 {action: "update", policy_id, field, value}
-
-    **去重规则**：add 操作若已存在相同 trigger+challenge_type 的策略，则合并更新（
-    times_applied/times_succeeded 累加）而非重复追加。防止 demo 模式反复产生相同策略导致文件膨胀。
-    """
+    """批量应用策略更新（由 Reflection 调用）。"""
     if not updates:
         return
-    store = _load_json(_CHALLENGE_POLICIES)
-    policies = store.setdefault("policies", [])
-    for u in updates:
-        if not isinstance(u, dict):
-            continue
-        action = u.get("action", "")
-        if action == "add" and isinstance(u.get("policy"), dict):
-            new_pol = u["policy"]
-            trigger = (new_pol.get("trigger") or "").strip()
-            ch_type = (new_pol.get("challenge_type") or "").strip()
-            # 去重：查找已有相同 trigger+challenge_type 的策略
-            dup_idx = -1
-            for i, p in enumerate(policies):
-                if ((p.get("trigger") or "").strip() == trigger
-                        and (p.get("challenge_type") or "").strip() == ch_type):
-                    dup_idx = i
-                    break
-            if dup_idx >= 0:
-                # 合并到已有策略：累加计数、保留最新字段
-                existing = policies[dup_idx]
-                existing["times_applied"] = existing.get("times_applied", 0) + new_pol.get("times_applied", 0)
-                existing["times_succeeded"] = existing.get("times_succeeded", 0) + new_pol.get("times_succeeded", 0)
-                existing["last_updated"] = _now()
-                # 新策略有而旧的没有的字段，补上（但不覆盖已有的非空值）
-                for k, v in new_pol.items():
-                    if k not in existing or not existing[k]:
-                        existing[k] = v
-            else:
-                # 全新策略：正常追加
-                if not new_pol.get("id"):
-                    new_pol["id"] = f"pol_{_now().replace(':', '').replace('-', '')}_{len(policies)}"
-                new_pol.setdefault("times_applied", 0)
-                new_pol.setdefault("times_succeeded", 0)
-                new_pol.setdefault("historical_success_rate", 0.0)
-                new_pol["last_updated"] = _now()
-                policies.append(new_pol)
-        elif action == "update" and u.get("policy_id"):
-            pid = u["policy_id"]
-            for p in policies:
-                if p.get("id") == pid:
-                    if "field" in u and "value" in u:
-                        p[u["field"]] = u["value"]
-                    elif isinstance(u.get("policy"), dict):
-                        p.update(u["policy"])
-                    p["last_updated"] = _now()
-                    break
-    _atomic_write(_CHALLENGE_POLICIES, store)
+    def _mutate(store):
+        policies = store.setdefault("policies", [])
+        for u in updates:
+            if not isinstance(u, dict):
+                continue
+            action = u.get("action", "")
+            if action == "add" and isinstance(u.get("policy"), dict):
+                new_pol = u["policy"]
+                trigger = (new_pol.get("trigger") or "").strip()
+                ch_type = (new_pol.get("challenge_type") or "").strip()
+                dup_idx = -1
+                for i, p in enumerate(policies):
+                    if ((p.get("trigger") or "").strip() == trigger
+                            and (p.get("challenge_type") or "").strip() == ch_type):
+                        dup_idx = i
+                        break
+                if dup_idx >= 0:
+                    existing = policies[dup_idx]
+                    existing["times_applied"] = existing.get("times_applied", 0) + new_pol.get("times_applied", 0)
+                    existing["times_succeeded"] = existing.get("times_succeeded", 0) + new_pol.get("times_succeeded", 0)
+                    existing["last_updated"] = _now()
+                    for k, v in new_pol.items():
+                        if k not in existing or not existing[k]:
+                            existing[k] = v
+                else:
+                    if not new_pol.get("id"):
+                        new_pol["id"] = f"pol_{_now().replace(':', '').replace('-', '')}_{len(policies)}"
+                    new_pol.setdefault("times_applied", 0)
+                    new_pol.setdefault("times_succeeded", 0)
+                    new_pol.setdefault("historical_success_rate", 0.0)
+                    new_pol["last_updated"] = _now()
+                    policies.append(new_pol)
+            elif action == "update" and u.get("policy_id"):
+                pid = u["policy_id"]
+                for p in policies:
+                    if p.get("id") == pid:
+                        if "field" in u and "value" in u:
+                            p[u["field"]] = u["value"]
+                        elif isinstance(u.get("policy"), dict):
+                            p.update(u["policy"])
+                        p["last_updated"] = _now()
+                        break
+    _transact(_BEHAVIOR, _mutate)
 
 
-# ============ 2.5. Active Strategy Store ============
+# ---- 3b. Strategy Cards (统一到 Behavior 文件) ----
 
 def _strategy_id(card: dict) -> str:
     body = json.dumps(
@@ -318,11 +481,7 @@ def normalize_strategy_card(card: dict) -> dict:
 
 
 def strategy_gate(card: dict) -> tuple[bool, list[str]]:
-    """Deterministic promotion gate for strategy cards.
-
-    This is intentionally stricter than meta reflection: a card must be
-    actionable in a specific stage before it can affect future runs.
-    """
+    """Deterministic promotion gate for strategy cards."""
     c = normalize_strategy_card(card)
     issues = []
     if c.get("stage") not in _ALLOWED_STRATEGY_STAGES:
@@ -342,49 +501,55 @@ def strategy_gate(card: dict) -> tuple[bool, list[str]]:
 
 
 def load_strategy_store() -> dict:
-    data = _load_json(_STRATEGY_CARDS)
+    data = _load_json(_BEHAVIOR)
     if not isinstance(data, dict):
         data = {}
-    data.setdefault("active", [])
-    data.setdefault("pending", [])
-    data.setdefault("rejected", [])
-    return data
+    strategies = data.get("strategies", {})
+    if not isinstance(strategies, dict):
+        strategies = {}
+    strategies.setdefault("active", [])
+    strategies.setdefault("pending", [])
+    strategies.setdefault("rejected", [])
+    return strategies
 
 
 def promote_strategy_candidates(candidates: list[dict], *, source_run_id: str = "") -> dict:
-    """Promote deterministic strategy candidates into the active store.
-
-    LLM reflection can suggest raw ideas elsewhere, but this function is the
-    only path that makes a strategy active.
-    """
-    store = load_strategy_store()
-    active = store.setdefault("active", [])
-    pending = store.setdefault("pending", [])
-    rejected = store.setdefault("rejected", [])
-    existing_ids = {str(c.get("id")) for c in active + pending}
+    """Promote deterministic strategy candidates into the active store."""
     result = {"activated": [], "pending": [], "rejected": []}
+    if not candidates:
+        return result
 
-    for raw in candidates or []:
-        card = normalize_strategy_card(raw)
-        if source_run_id:
-            card["source_run_id"] = source_run_id
-        ok, issues = strategy_gate(card)
-        if card["id"] in existing_ids:
-            continue
-        if ok:
-            card["status"] = "active"
-            active.append(card)
-            existing_ids.add(card["id"])
-            result["activated"].append(card)
-        else:
-            card["status"] = "rejected" if "low_confidence" in issues else "pending"
-            card["gate_issues"] = issues
-            target = rejected if card["status"] == "rejected" else pending
-            target.append(card)
-            existing_ids.add(card["id"])
-            result[card["status"]].append(card)
+    def _mutate(store_data):
+        strategies = store_data.setdefault("strategies", {})
+        if not isinstance(strategies, dict):
+            strategies = {}
+            store_data["strategies"] = strategies
+        active = strategies.setdefault("active", [])
+        pending = strategies.setdefault("pending", [])
+        rejected = strategies.setdefault("rejected", [])
+        existing_ids = {str(c.get("id")) for c in active + pending}
 
-    _atomic_write(_STRATEGY_CARDS, store)
+        for raw in candidates or []:
+            card = normalize_strategy_card(raw)
+            if source_run_id:
+                card["source_run_id"] = source_run_id
+            ok, issues = strategy_gate(card)
+            if card["id"] in existing_ids:
+                continue
+            if ok:
+                card["status"] = "active"
+                active.append(card)
+                existing_ids.add(card["id"])
+                result["activated"].append(card)
+            else:
+                card["status"] = "rejected" if "low_confidence" in issues else "pending"
+                card["gate_issues"] = issues
+                target = rejected if card["status"] == "rejected" else pending
+                target.append(card)
+                existing_ids.add(card["id"])
+                result[card["status"]].append(card)
+
+    _transact(_BEHAVIOR, _mutate)
     return result
 
 
@@ -404,10 +569,10 @@ def _matches_strategy(card: dict, context: dict) -> bool:
 
 
 def load_active_strategy_cards(context: dict | None = None, *, stage: str = "", limit: int = 8) -> list[dict]:
-    store = load_strategy_store()
+    strategies = load_strategy_store()
     cards = [
         normalize_strategy_card(c)
-        for c in store.get("active", [])
+        for c in strategies.get("active", [])
         if isinstance(c, dict) and c.get("status", "active") == "active"
     ]
     if stage:
@@ -509,116 +674,120 @@ def update_strategy_effects(strategy_ids: list[str], run_metrics: dict):
     """Update coarse strategy effect counters after a run finishes."""
     if not strategy_ids:
         return
-    store = load_strategy_store()
-    active = store.get("active", [])
-    cq = run_metrics.get("collect_quality") or {}
-    qe = run_metrics.get("quality_eval") or {}
-    collect_ok = int(cq.get("score", 0) or 0) >= 70
-    report_ok = int(qe.get("total", qe.get("score", 0)) or 0) >= 3 if qe else True
-    succeeded = collect_ok and report_ok and run_metrics.get("status") in {"done", "partial"}
-    id_set = set(strategy_ids)
-    for card in active:
-        if card.get("id") not in id_set:
-            continue
-        card["times_applied"] = int(card.get("times_applied", 0) or 0) + 1
-        if succeeded:
-            card["times_succeeded"] = int(card.get("times_succeeded", 0) or 0) + 1
-        applied = max(1, int(card.get("times_applied", 1) or 1))
-        card["effect_score"] = round(int(card.get("times_succeeded", 0) or 0) / applied, 3)
-        card["last_updated"] = _now()
-    _atomic_write(_STRATEGY_CARDS, store)
+    def _mutate(store_data):
+        strategies = store_data.get("strategies", {})
+        if not isinstance(strategies, dict):
+            return
+        active = strategies.get("active", [])
+        cq = run_metrics.get("collect_quality") or {}
+        qe = run_metrics.get("quality_eval") or {}
+        collect_ok = int(cq.get("score", 0) or 0) >= 70
+        report_ok = int(qe.get("total", qe.get("score", 0)) or 0) >= 3 if qe else True
+        succeeded = collect_ok and report_ok and run_metrics.get("status") in {"done", "partial"}
+        id_set = set(strategy_ids)
+        for card in active:
+            if card.get("id") not in id_set:
+                continue
+            card["times_applied"] = int(card.get("times_applied", 0) or 0) + 1
+            if succeeded:
+                card["times_succeeded"] = int(card.get("times_succeeded", 0) or 0) + 1
+            applied = max(1, int(card.get("times_applied", 1) or 1))
+            card["effect_score"] = round(int(card.get("times_succeeded", 0) or 0) / applied, 3)
+            card["last_updated"] = _now()
+    _transact(_BEHAVIOR, _mutate)
 
 
-# ============ 3. Episodic Memory ============
-
-def save_episodic(run_summary: dict):
-    """追加一次任务的执行日志到当天的 episodic 文件。
-
-    Write: 每次任务完成后（Report 阶段）
-    Read:  很少（仅 Meta Reflection 需要历史对比时）
-    """
-    _EPISODIC_DIR.mkdir(parents=True, exist_ok=True)
-    path = _EPISODIC_DIR / f"{_today()}.json"
-    data = _load_json(path)
-    if not isinstance(data, dict):
-        data = {}
-    runs = data.setdefault("runs", [])
-    run_summary["timestamp"] = _now()
-    runs.append(run_summary)
-    _atomic_write(path, data)
-
-
-def load_recent_episodes(n: int = 5) -> list[dict]:
-    """加载最近 N 次任务日志（供 Meta Reflection 参考）。
-
-    Read: Meta Reflection 时
-    """
-    if not _EPISODIC_DIR.exists():
-        return []
-    files = sorted(_EPISODIC_DIR.glob("*.json"), reverse=True)
-    episodes = []
-    for f in files:
-        data = _load_json(f)
-        runs = data.get("runs", []) if isinstance(data, dict) else []
-        episodes.extend(runs)
-        if len(episodes) >= n:
-            break
-    # 返回最近的 N 条（列表末尾是最新写入的）
-    return episodes[-n:] if len(episodes) >= n else episodes
-
-
-# ============ 4. Meta Reflection ============
+# ================================================================
+#  4. Reflection — 瞬态，不持久化
+# ================================================================
+# Reflection 现在是 orchestrator 管道内的一个步骤。
+# 原 save_reflection / load_reflections 保留为空操作兼容桩，
+# 供 orchestrator 调用时不报错。反思结果直接写入 Domain + Behavior。
 
 def load_reflections(n: int = 10) -> list[dict]:
-    """加载最近 N 条反思记录。
+    """兼容桩：返回已沉淀的 Domain + Behavior 知识摘要，供 Reflection 避免重复。"""
+    return load_existing_knowledge_summary()
 
-    Read: 每次任务后（Meta Reflection 前，参考历史反思避免重复）
+
+def load_existing_knowledge_summary() -> list[dict]:
+    """加载已沉淀的 Domain 和 Behavior 知识摘要，供 Reflection 了解已有策略。
+
+    返回一个精简的列表，让 LLM 知道哪些模式/策略已经被捕获了，
+    避免重复生成相同的策略更新。
     """
-    data = _load_json(_META_REFLECTION)
-    reflections = data.get("reflections", []) if isinstance(data, dict) else []
-    return reflections[-n:] if reflections else []
+    summary: list[dict] = []
+
+    # Domain: 已有的 failure_playbook 模式
+    try:
+        domain = _load_json(_DOMAIN)
+        if isinstance(domain, dict):
+            generic = domain.get("generic", {})
+            if isinstance(generic, dict):
+                fp = generic.get("failure_playbook", [])
+                if isinstance(fp, list):
+                    for item in fp[-10:]:
+                        if isinstance(item, dict):
+                            summary.append({
+                                "type": "domain_pattern",
+                                "pattern": item.get("pattern", "")[:60],
+                                "trap": item.get("trap", "")[:60],
+                            })
+            by_tk = domain.get("by_template_key", {})
+            if isinstance(by_tk, dict):
+                for tk, tpl_data in by_tk.items():
+                    if isinstance(tpl_data, dict):
+                        fp2 = tpl_data.get("failure_playbook", [])
+                        if isinstance(fp2, list):
+                            for item in fp2[-5:]:
+                                if isinstance(item, dict):
+                                    summary.append({
+                                        "type": "domain_pattern",
+                                        "template_key": tk,
+                                        "pattern": item.get("pattern", "")[:60],
+                                    })
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Behavior: 已有的 challenge policies（高成功率优先）
+    try:
+        behavior = _load_json(_BEHAVIOR)
+        if isinstance(behavior, dict):
+            policies = behavior.get("policies", [])
+            if isinstance(policies, list):
+                sorted_pols = sorted(
+                    (p for p in policies if isinstance(p, dict)),
+                    key=lambda p: p.get("historical_success_rate", 0),
+                    reverse=True,
+                )
+                for p in sorted_pols[:10]:
+                    summary.append({
+                        "type": "behavior_policy",
+                        "trigger": p.get("trigger", "")[:60],
+                        "challenge_type": p.get("challenge_type", ""),
+                        "success_rate": p.get("historical_success_rate", 0),
+                    })
+    except Exception:  # noqa: BLE001
+        pass
+
+    return summary
 
 
-def save_reflection(reflection: dict):
-    """追加一条反思记录。
+def save_reflection(reflection: dict) -> bool:
+    """兼容桩：反思结果不再独立持久化。
 
-    Write: 每次任务后（Report 阶段末尾）
-    **去重规则**：若最近 10 条反思中有相同 missed_challenges 内容（同一遗漏），跳过不写。
-    这防止 demo 模式或重复分析产生大量完全相同的反思记录。
+    policy_updates 和 industry_pattern_updates 由 orchestrator 直接调用
+    apply_policy_updates() 和 update_industry_rag() 写入 Behavior / Domain。
+    返回 True 表示"处理完毕"。
     """
-    data = _load_json(_META_REFLECTION)
-    if not isinstance(data, dict):
-        data = {}
-    reflections = data.setdefault("reflections", [])
-    # 轻量去重：对比 missed_challenges 列表的字符串指纹
-    new_mc = reflection.get("missed_challenges")
-    is_dup = False
-    if isinstance(new_mc, list) and new_mc:
-        new_fingerprint = str(sorted(
-            (c.get("insight_claim", "")[:60] for c in new_mc if isinstance(c, dict))
-        ))
-        # 只检查最近 10 条，避免全量扫描
-        for r in reflections[-10:]:
-            existing_mc = r.get("missed_challenges")
-            if isinstance(existing_mc, list):
-                existing_fp = str(sorted(
-                    (c.get("insight_claim", "")[:60] for c in existing_mc if isinstance(c, dict))
-                ))
-                if new_fingerprint == existing_fp:
-                    is_dup = True
-                    break
-    if not is_dup:
-        reflection["timestamp"] = _now()
-        reflections.append(reflection)
-        # 保留最近 500 条，防止无限膨胀
-        if len(reflections) > 500:
-            reflections[:] = reflections[-500:]
-        _atomic_write(_META_REFLECTION, data)
-    return not is_dup  # 返回是否实际写入了（供调用方日志用）
+    return True
 
+
+# ================================================================
+#  5. Shared Helpers
+# ================================================================
 
 def build_run_summary(run) -> dict:
-    """从 AnalysisRun 对象构建 episodic memory 摘要。"""
+    """从 AnalysisRun 对象构建 experience memory 摘要。"""
     insights_log = []
     for ins in run.insights:
         fr = ins.falsifications[-1] if ins.falsifications else None
@@ -653,132 +822,3 @@ def build_run_summary(run) -> dict:
         "applied_strategy_ids": getattr(run, "applied_strategy_ids", []),
         "strategy_effect": getattr(run, "strategy_effect", {}),
     }
-
-
-# ============ 5. External Eval Feedback (optional cross-run loop) ============
-#
-# 外部评测端点 (/api/eval/live-chatbot-comparison) 的事后评测发现，
-# 存下来供下一次同主题 pipeline 运行时读取注入。
-# 非必选：读取失败/空时 pipeline 正常继续；存储失败不影响评测端点返回。
-# 设计：按 query 规范化匹配，累积存储，保留最近 50 条防无限增长。
-
-
-def _normalize_query_key(query: str) -> str:
-    """规范化 query 用于模糊匹配：小写、去标点、去多余空格。"""
-    q = re.sub(r"[\s\u3000]+", "", (query or "").lower())
-    q = re.sub(r"[（()）,，。.!！?？·、/\\\"'`]+", "", q)
-    return q.strip()[:80]
-
-
-def save_eval_feedback(query: str, feedback: dict) -> None:
-    """存储一次外部评测发现，供下次同主题 pipeline 运行时读取。
-
-    Args:
-        query: 分析对象（如"小红书 商业分析"）
-        feedback: {run_id, fact_score, coverage_score, timeliness_score, gaps, ...}
-
-    非必选：失败静默，不影响评测端点返回。
-    """
-    try:
-        data = _load_json(_EVAL_FEEDBACK)
-        if not isinstance(data, dict):
-            data = {}
-        feedbacks = data.setdefault("feedbacks", [])
-        entry = {
-            "query": (query or "").strip()[:120],
-            "query_key": _normalize_query_key(query),
-            "timestamp": _now(),
-        }
-        entry.update(feedback)
-        feedbacks.append(entry)
-        # 保留最近 50 条，防止无限增长
-        if len(feedbacks) > 50:
-            data["feedbacks"] = feedbacks[-50:]
-        _atomic_write(_EVAL_FEEDBACK, data)
-    except Exception:  # noqa: BLE001
-        # 存储失败不影响评测端点返回
-        pass
-
-
-def load_eval_feedback(query: str, limit: int = 3) -> list[dict]:
-    """加载与 query 相关的历史外部评测发现（最近 limit 条）。
-
-    匹配规则：query_key 包含关系（任一方向子串匹配），避免完全 miss。
-    非必选：无历史评测或读取失败时返回空列表。
-
-    Args:
-        query: 当前分析对象
-        limit: 最多返回几条
-
-    Returns:
-        list[dict]，每条含 fact_score/coverage_score/timeliness_score/gaps 等
-    """
-    try:
-        data = _load_json(_EVAL_FEEDBACK)
-        if not isinstance(data, dict):
-            return []
-        feedbacks = data.get("feedbacks", [])
-        if not isinstance(feedbacks, list) or not feedbacks:
-            return []
-        qk = _normalize_query_key(query)
-        if not qk:
-            return []
-        matched = [
-            f for f in feedbacks
-            if isinstance(f, dict)
-            and (qk in (f.get("query_key") or "")
-                 or (f.get("query_key") or "") in qk)
-        ]
-        # 按 timestamp 降序取最近 limit 条，再正序返回（旧→新）
-        matched.sort(key=lambda f: f.get("timestamp", ""), reverse=True)
-        return list(reversed(matched[-limit:]))
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def generalize_eval_weaknesses(past_evals: list[dict]) -> list[str]:
-    """从历史外部评测中泛化提取 Agent 常见不足模式。
-
-    不是针对性复用具体 gaps（"上次缺了云业务分析"），而是泛化成通用经验
-    （"Agent 容易结构松散、推算不严谨"），让 LLM 写报告时自知。
-
-    Args:
-        past_evals: load_eval_feedback 返回的历史评测列表
-
-    Returns:
-        泛化后的不足模式列表（如"结构松散，篇幅需要治理"）
-    """
-    if not past_evals:
-        return []
-
-    # 统计各类不足出现的次数
-    weakness_counts: dict[str, int] = {}
-    for pe in past_evals:
-        if not isinstance(pe, dict):
-            continue
-        gaps = pe.get("gaps") or []
-        fact = pe.get("fact_score")
-        structure = pe.get("structure_score")
-        coverage = pe.get("coverage_score")
-        timeliness = pe.get("timeliness_score")
-        gaps_text = " ".join(str(g) for g in gaps) if isinstance(gaps, list) else str(gaps)
-
-        # 按模式匹配泛化
-        if any(k in gaps_text for k in ("结构", "篇幅", "治理", "structure")):
-            weakness_counts["结构松散，篇幅需要治理"] = weakness_counts.get("结构松散，篇幅需要治理", 0) + 1
-        if fact is not None and fact < 50:
-            weakness_counts["事实断言无法从证据验证"] = weakness_counts.get("事实断言无法从证据验证", 0) + 1
-        if any(k in gaps_text for k in ("遗漏", "覆盖", "coverage", "维度")):
-            weakness_counts["分析维度覆盖不全"] = weakness_counts.get("分析维度覆盖不全", 0) + 1
-        if coverage is not None and coverage < 0.6:
-            weakness_counts["关键问题遗漏检测分数低"] = weakness_counts.get("关键问题遗漏检测分数低", 0) + 1
-        if any(k in gaps_text for k in ("数据", "推算", "估算", "口径", "验证")):
-            weakness_counts["数据推算不严谨，估算值当精确值"] = weakness_counts.get("数据推算不严谨，估算值当精确值", 0) + 1
-        if any(k in gaps_text for k in ("过时", "时效", "timeliness", "旧")):
-            weakness_counts["引用数据过时"] = weakness_counts.get("引用数据过时", 0) + 1
-        if timeliness is not None and timeliness < 0.5:
-            weakness_counts["时效性评分低"] = weakness_counts.get("时效性评分低", 0) + 1
-
-    # 按出现次数降序，只保留出现≥1次的模式
-    sorted_weaknesses = sorted(weakness_counts.items(), key=lambda x: x[1], reverse=True)
-    return [w for w, _ in sorted_weaknesses]

@@ -3,15 +3,15 @@ from __future__ import annotations
 import memory_store
 
 
-def _tmp_strategy_store(monkeypatch, tmp_path):
-    path = tmp_path / "strategy_cards.json"
-    monkeypatch.setattr(memory_store, "_STRATEGY_CARDS", path)
+def _tmp_behavior_store(monkeypatch, tmp_path):
+    path = tmp_path / "behavior.json"
+    monkeypatch.setattr(memory_store, "_BEHAVIOR", path)
     memory_store._cache.clear()
     return path
 
 
 def test_strategy_gate_rejects_non_actionable_card(tmp_path, monkeypatch):
-    _tmp_strategy_store(monkeypatch, tmp_path)
+    _tmp_behavior_store(monkeypatch, tmp_path)
 
     ok, issues = memory_store.strategy_gate({
         "stage": "collect",
@@ -27,7 +27,7 @@ def test_strategy_gate_rejects_non_actionable_card(tmp_path, monkeypatch):
 
 
 def test_generate_and_promote_collect_strategy(tmp_path, monkeypatch):
-    _tmp_strategy_store(monkeypatch, tmp_path)
+    _tmp_behavior_store(monkeypatch, tmp_path)
     summary = {
         "run_id": "r1",
         "query": "腾讯控股",
@@ -52,7 +52,7 @@ def test_generate_and_promote_collect_strategy(tmp_path, monkeypatch):
 
 
 def test_active_strategy_cards_match_context(tmp_path, monkeypatch):
-    _tmp_strategy_store(monkeypatch, tmp_path)
+    _tmp_behavior_store(monkeypatch, tmp_path)
     memory_store.promote_strategy_candidates([
         {
             "stage": "collect",

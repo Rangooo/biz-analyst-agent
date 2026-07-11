@@ -1030,12 +1030,12 @@ def logic_consistency_prompt(exec_summary: str, core_findings: str,
     return [{"role": "system", "content": sys}, {"role": "user", "content": user}]
 
 
-# ============ 四层长期记忆：Meta Reflection ============
+# ============ Reflection 学习环 ============
 
 
 def meta_reflection_prompt(run_summary_json: str, recent_episodes_json: str,
-                           past_reflections_json: str) -> list[dict]:
-    """Meta Reflection —— 反思为什么遗漏了某些挑战角度，生成策略更新。
+                           existing_knowledge_json: str) -> list[dict]:
+    """Reflection —— 反思遗漏，蒸馏到 Domain/Behavior。
 
     反思核心问题：
     1. 为什么我最初没想到这个挑战？
@@ -1057,15 +1057,15 @@ def meta_reflection_prompt(run_summary_json: str, recent_episodes_json: str,
 - 只关注真正的遗漏（9 维挑战已覆盖的角度不算遗漏，除非某个维度内的特定角度被跳过）
 - 策略更新必须具体可执行（trigger 用关键词/模式描述，不要泛泛而谈）
 - 如果本次分析没有明显遗漏，输出空数组（不要为凑数编造）
-- 避免与历史反思重复（past_reflections 已列出最近反思）"""
+- 避免与已沉淀知识重复（existing_knowledge 列出了已有的行业模式和策略）"""
     user = f"""本次任务摘要：
 {run_summary_json}
 
 最近任务日志（供对比，识别重复模式）：
 {recent_episodes_json}
 
-历史反思（避免重复）：
-{past_reflections_json}
+已沉淀知识（避免重复生成已有的策略/模式）：
+{existing_knowledge_json}
 
 请输出 JSON：
 {{

@@ -40,8 +40,27 @@ backend/backend.pid
 backend/data/*.db
 backend/data/*.db-*
 goldens/
-memory/
+
+# Memory — runtime data, not source code
+# Only memory/domain.json.example and memory/README.md are tracked
+memory/experience.json
+memory/behavior.json
+memory/domain.json
+memory/_old/
+memory/.migrated_v3
+
+# Legacy memory files (pre-v0.1)
+memory/challenge_policies.json
+memory/strategy_cards.json
+memory/eval_feedback.json
+memory/episodic/
+memory/industry_rag/
+memory/meta_reflection/
+
 frontend/tsconfig.tsbuildinfo
+
+# Uploaded files
+backend/uploads/
 
 # WorkBuddy (keep .workbuddy/skills and .workbuddy/agents, exclude memory/logs)
 .workbuddy/memory/

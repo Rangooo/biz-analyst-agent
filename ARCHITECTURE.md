@@ -1,6 +1,6 @@
 # biz-analyst-agent 架构总结与对比
 
-> 2026-06-27 更新 · 结合 GitHub 同类项目分析
+> 2026-07-11 更新 · 结合 GitHub 同类项目分析
 
 ## 一、当前架构
 
@@ -15,7 +15,7 @@ Scope → Collect → Analyze → Falsify → Refine → Report
 
 | 阶段 | 核心逻辑 | 关键设计 |
 |------|----------|----------|
-| **Scope** | 动态生成分析维度（非固定模板） | Industry RAG playbooks 匹配行业模板；12视角池+sections驱动 |
+| **Scope** | 动态生成分析维度（非固定模板） | Domain Memory 匹配行业框架；12视角池+sections驱动 |
 | **Collect** | 多源检索（Exa主→Tavily补充→SEC/iFinD/em_news） | 时效过滤(days=180新闻/365证伪)；语义检索证据池(TF-IDF) |
 | **Analyze** | 生成结构化洞察（非数据复述） | 论点需含量化含义+主动反驳共识；分析师只输出claim+reasoning+evidence+confidence，不写可证伪条件 |
 | **Falsify** | 九维红队挑战+裁决 | 红队基于现有公开数据独立输出 falsification_path（推翻路径）；上下文感知(非上市不要求财报)；**时效约束**(注入today+data_as_of，禁止要求尚未发布的数据，`_sanitize_temporal_challenges`降级泛泛"数据过时"投诉)；solid放宽至允许low；自我迭代补强incomplete |
@@ -33,11 +33,25 @@ Scope → Collect → Analyze → Falsify → Refine → Report
 - **reviewer**（终审）：Reverdict/Report（裁决+撰写）
 - 按tier+family自动指派，单Key降级透明标注
 
-### 四层长期记忆
-1. **Industry RAG**（`playbooks.json`）：按template_key匹配行业模板
-2. **Challenge Policy Store**（`challenge_policies.json`）：9条策略，Falsify阶段匹配+更新成功率
-3. **Episodic Memory**（`runs/`）：每次任务写执行日志
-4. **Meta Reflection**（`reflections.json`）：任务后LLM反思遗漏挑战→生成策略更新
+### 三类持久化存储 + Reflection 学习环
+
+```
+Experience ──> Reflection ──> Domain
+                    └───────> Behavior
+
+Domain ─────> Scope / Collect（决定看什么）
+Behavior ───> Collect / Falsify / Report（决定怎么做）
+```
+
+| 存储 | 文件 | 用途 | 读取时机 |
+|------|------|------|----------|
+| **Experience** | `experience.json` | 任务摘要 + 评测反馈 | Reflection 时读（跨任务复盘输入） |
+| **Domain** | `domain.json` | 行业分析框架与失败模式 | Scope 阶段读（决定看什么） |
+| **Behavior** | `behavior.json` | 证伪策略 + 各阶段行为策略卡 | Collect/Falsify/Report 读（决定怎么做） |
+
+**Reflection** 是瞬态学习过程（非第四层存储）：run 结束后分析 gaps，蒸馏产出直接写入 Domain + Behavior。
+
+> ⚠ 线程安全：所有写操作通过 `_transact()` 在锁内完成读-改-写事务。当前仅保证单进程安全，多进程部署前需迁移到 SQLite。
 
 ### 证据体系
 - 7级溯源等级（T1交易所→T7博客）
@@ -64,7 +78,7 @@ Scope → Collect → Analyze → Falsify → Refine → Report
 | 维度 | 本项目 | TradingAgents (18K★) | virattt/dexter | intellifin (92%准确率) |
 |------|--------|---------------------|----------------|----------------------|
 | **证伪闭环** | 九维挑战+自我迭代+辩论回合 | 无（仅多agent讨论） | 无 | 无 |
-| **记忆系统** | 四层（RAG+Policy+Episodic+Meta） | 无 | 无 | 无 |
+| **记忆系统** | 三类持久化存储+Reflection学习环 | 无 | 无 | 无 |
 | **信源分级** | 7级tier+时效加权+URL自动升级 | 无 | 无 | 无 |
 | **反chatbot约束** | 三条硬约束写进代码 | 无 | 无 | 无 |
 | **质量评估** | 8维度评分+改进循环+防高估锚定 | 无 | eval benchmark | 准确率基准 |
@@ -76,7 +90,7 @@ Scope → Collect → Analyze → Falsify → Refine → Report
 
 ### 本项目独有优势
 1. **九维证伪框架**——其他项目最多做多agent讨论，没有系统化的证伪维度
-2. **四层记忆系统**——跨任务学习，其他项目都是无状态的
+2. **持久化记忆+Reflection学习环**——Experience→Reflection→Domain/Behavior，跨任务自我改进
 3. **信源分级+时效加权**——其他项目不区分来源可靠性
 4. **上下文感知红队**——按公司类型调整挑战策略
 5. **反chatbot硬约束**——代码层面防止"反思剧场"，可证伪条件须基于当前已公开可查数据（非未来假设），逻辑推导型洞察不降级
@@ -115,10 +129,9 @@ Scope → Collect → Analyze → Falsify → Refine → Report
 
 ### P2（长期方向）
 
-7. **Human-in-the-loop UI**
-   - 当前：全自动，用户只能等结果
-   - 改进：Scope阶段展示生成的维度供用户确认；Falsify阶段展示存疑洞察供用户标注
-   - 预期：分析质量通过人工校准提升
+7. ~~**Human-in-the-loop UI**~~ ✓
+   - 已完成：Scope阶段暂停等用户确认维度（asyncio.Event, 300s超时自动继续）
+   - 效果：用户可在分析前调整/确认维度
 
 8. **多模态证据**
    - 当前：仅文本证据
