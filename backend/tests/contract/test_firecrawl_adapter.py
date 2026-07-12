@@ -57,6 +57,14 @@ def test_keyless_stops_at_monthly_limit(monkeypatch, tmp_path):
     assert FakeClient.calls == []
 
 
+def test_keyless_scrape_costs_five_credits(monkeypatch, tmp_path):
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    monkeypatch.setattr(fc, "_budget", fc._KeylessBudget(tmp_path / "usage.json"))
+    monkeypatch.setattr(fc.httpx, "Client", FakeClient)
+    assert fc.scrape_url("https://example.com") == "# Example"
+    assert fc.firecrawl_budget_status()["used"] == 5
+
+
 def test_v2_search_and_scrape(monkeypatch):
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
     monkeypatch.setattr(fc.httpx, "Client", FakeClient)

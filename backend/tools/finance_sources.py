@@ -1191,7 +1191,7 @@ DATA_SOURCE_CATALOG: dict[str, dict] = {
         "env_vars": ["FIRECRAWL_API_KEY"],
         "primary_env": "FIRECRAWL_API_KEY",
         "input_hint": "可选；不填则使用 Keyless 免费层",
-        "cost": "Keyless 每月 1000 credits；scrape=1，search=2/最多10条结果",
+        "cost": "Keyless 每月 1000 credits；scrape=5，search=2/最多10条结果",
         "url": "https://www.firecrawl.dev/app/api-keys",
         "note": "默认使用 Keyless v2 并在本地限制每月 1000 credits；配置 API key 后切换到账户额度。失败时自动 fallback 到 httpx/Playwright。",
     },

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.firecrawl.dev/v2"
 KEYLESS_MONTHLY_CREDITS = 1000
-SCRAPE_CREDITS = 1
+SCRAPE_CREDITS = 5
 SEARCH_CREDITS = 2
 _USAGE_FILE = Path(os.getenv(
     "FIRECRAWL_USAGE_FILE",
