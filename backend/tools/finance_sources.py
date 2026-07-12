@@ -1047,6 +1047,13 @@ def init_adapters() -> dict[str, BaseAdapter]:
                 _REGISTRY[inst.name] = inst
             except Exception:  # noqa: BLE001
                 pass
+        # Firecrawl 深度抓取适配器（需要 API key）
+        try:
+            from tools.firecrawl_adapter import FirecrawlAdapter
+            fc = FirecrawlAdapter()
+            _REGISTRY[fc.name] = fc
+        except Exception:  # noqa: BLE001
+            pass
     return _REGISTRY
 
 
@@ -1174,6 +1181,19 @@ DATA_SOURCE_CATALOG: dict[str, dict] = {
         "cost": "本地解析，无需 API key",
         "url": "",
         "note": "适用任意 PDF（券商研报、招股书、招股说明书等）。前 N 页用作证据摘要，避免大文件 token 超限。",
+    },
+    "firecrawl": {
+        "label": "Firecrawl 深度抓取",
+        "purpose": "JS 渲染网页抓取 + 结构化数据提取，补充 Exa 对动态页面的覆盖短板。",
+        "priority": "recommended",
+        "category": "search",
+        "input_type": "none",
+        "env_vars": ["FIRECRAWL_API_KEY"],
+        "primary_env": "FIRECRAWL_API_KEY",
+        "input_hint": "可选；在 Firecrawl 控制台创建 API key",
+        "cost": "按 Firecrawl 账户套餐与用量计费",
+        "url": "https://www.firecrawl.dev/app/api-keys",
+        "note": "配置后启用 v2 search/scrape；未配置或请求失败时自动 fallback 到 httpx/Playwright。",
     },
 }
 

@@ -1320,9 +1320,10 @@ class Orchestrator:
                     f"{profile.name} 牌照 监管 合规",
                     f"{profile.name} 用户规模 DAU GMV 营收 量级",
                 ]
-                # 优先通用/语义搜索（Exa/Tavily/Serper），em_news 兜底
+                # 优先通用/语义搜索（Exa/Tavily/Serper），Firecrawl 补位，em_news 兜底
                 priv_src = (self._adapter("general_search")
                             or self._adapter("exa_search")
+                            or self._adapter("firecrawl")
                             or self._adapter("em_news")
                             or fin_api)
                 if priv_src:
@@ -1477,8 +1478,26 @@ class Orchestrator:
                 yield self._ev("collect", "thinking", "非美股财报源缺失",
                                 f"{profile.ticker} 不是 SEC EDGAR 支持的美股代码；需配置 Exa/Tavily/Serper 或港股/A股金融数据源")
             if not gen and not exa and not sources_used:
-                yield self._ev("collect", "thinking", "无可用数据源",
-                                "未配置任何搜索/金融数据源 Key，仅能基于有限信息分析")
+                # 最后尝试 Firecrawl 作为 emergency fallback（免费层）
+                _fc = self._adapter("firecrawl")
+                if _fc:
+                    sources_used.append("firecrawl")
+                    yield self._ev("collect", "search", "Firecrawl 兜底搜索",
+                                    "Exa/Tavily/Serper 均不可用，启用 Firecrawl 免费层搜索", source="firecrawl")
+                    _fc_queries = [
+                        f"{profile.name} {profile.industry or ''} {_cur_year} 最新动态",
+                        f"{profile.name} 营收 增速 财报 业绩",
+                    ]
+                    _fc_seen: set[str] = set()
+                    for q in _fc_queries:
+                        async for e in self._harvest(
+                            _fc, q, kind="general", max_results=5, take=3,
+                            source="firecrawl", seen_urls=_fc_seen,
+                            emit_search="Firecrawl搜索"):
+                            yield e
+                else:
+                    yield self._ev("collect", "thinking", "无可用数据源",
+                                    "未配置任何搜索/金融数据源 Key，仅能基于有限信息分析")
             self.run.data_sources_used = sources_used
 
         # 数据截至时点：取最新证据的 published_at / as_of；无时点兜底当前日期

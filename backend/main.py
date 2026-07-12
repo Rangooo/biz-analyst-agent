@@ -35,6 +35,15 @@ from store import list_runs, load_run, mark_stale_runs_interrupted, save_run  # 
 from tools.finance_sources import list_adapters, runtime_config_envs  # noqa: E402
 from tools.search import has_search_backend, search_status  # noqa: E402
 
+
+def _firecrawl_budget() -> dict | None:
+    """获取 Firecrawl 预算状态；未安装时返回 None。"""
+    try:
+        from tools.firecrawl_adapter import firecrawl_budget_status
+        return firecrawl_budget_status()
+    except ImportError:
+        return None
+
 _RUNTIME_CONFIG = load_runtime_config()
 
 app = FastAPI(title="商业分析 Agent")
@@ -116,6 +125,7 @@ def health(analyst: str | None = None, red_team: str | None = None):
         "reviewer_provider": "demo" if demo else (client.effective_provider("reviewer") or "demo"),
         "role_plan": client.role_plan() if not demo else {},
         "data_sources": list_adapters(),
+        "firecrawl_budget": _firecrawl_budget(),
         "app_mode": _RUNTIME_CONFIG.app_mode,
         "runtime_config_enabled": _RUNTIME_CONFIG.allow_runtime_config,
         "custom_provider_enabled": _RUNTIME_CONFIG.allow_custom_provider,
