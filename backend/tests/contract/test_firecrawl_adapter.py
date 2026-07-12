@@ -34,10 +34,27 @@ class FakeClient:
         }]}})
 
 
-def test_disabled_without_api_key(monkeypatch):
+def test_keyless_without_api_key(monkeypatch, tmp_path):
     monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    monkeypatch.setattr(fc, "_budget", fc._KeylessBudget(tmp_path / "usage.json"))
+    monkeypatch.setattr(fc.httpx, "Client", FakeClient)
+    FakeClient.calls.clear()
+    assert fc.FirecrawlAdapter().available
+    assert fc.search_web("test")[0]["url"] == "https://example.com"
+    assert "Authorization" not in FakeClient.calls[0][1]
+    assert fc.firecrawl_budget_status()["used"] == 2
+
+
+def test_keyless_stops_at_monthly_limit(monkeypatch, tmp_path):
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    budget = fc._KeylessBudget(tmp_path / "usage.json")
+    budget.record(fc.KEYLESS_MONTHLY_CREDITS)
+    monkeypatch.setattr(fc, "_budget", budget)
+    monkeypatch.setattr(fc.httpx, "Client", FakeClient)
+    FakeClient.calls.clear()
     assert not fc.FirecrawlAdapter().available
-    assert fc.search_web("test") == []
+    assert fc.scrape_url("https://example.com") == ""
+    assert FakeClient.calls == []
 
 
 def test_v2_search_and_scrape(monkeypatch):
