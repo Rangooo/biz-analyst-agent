@@ -103,11 +103,18 @@ def scrape_url(url: str, *, only_main: bool = True, wait_for: int = 0,
 def search_web(query: str, *, max_results: int = 5,
                days: int | None = None) -> list[dict]:
     """Search the web through Firecrawl v2."""
-    payload: dict = {"query": query, "limit": max_results, "sources": ["web"]}
+    payload: dict = {"query": query, "limit": max_results}
     if days:
         payload["tbs"] = f"qdr:d{days}"
-    data = _post("/search", payload, keyless_cost=SEARCH_CREDITS).get("data") or {}
-    rows = data.get("web", []) if isinstance(data, dict) else []
+    body = _post("/search", payload, keyless_cost=SEARCH_CREDITS)
+    # v2 response: {success, data: {web: [...], ...}, id, creditsUsed}
+    data = body.get("data") or {}
+    if isinstance(data, dict):
+        rows = data.get("web", [])
+    elif isinstance(data, list):
+        rows = data
+    else:
+        rows = []
     return [row for row in rows[:max_results] if isinstance(row, dict)]
 
 

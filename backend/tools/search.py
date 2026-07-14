@@ -89,7 +89,7 @@ def search_status() -> dict:
     exa = bool(os.getenv("EXA_API_KEY") or shutil.which("mcporter"))
     exhausted = _TAVILY_EXHAUSTED
 
-    # Firecrawl 在配置 API key 后可用。
+    # Firecrawl 免费层始终可用（只要有预算）
     try:
         from tools.firecrawl_adapter import firecrawl_available
         firecrawl = firecrawl_available()

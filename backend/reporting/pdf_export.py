@@ -29,9 +29,17 @@ log = logging.getLogger(__name__)
 
 # ---- 中文字体注册 ----
 _FONT_CANDIDATES = [
+    # Windows
     r"C:\Windows\Fonts\simhei.ttf",
     r"C:\Windows\Fonts\STSONG.TTF",
     r"C:\Windows\Fonts\Deng.ttf",
+    # macOS
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/System/Library/Fonts/Supplemental/STHeiti Light.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+    # Linux
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
 ]
@@ -41,28 +49,41 @@ _CJK_FONT_PATH = None  # 字体文件路径（用于 HTML 渲染）
 
 
 def _register_cjk_font():
-    """注册中文字体到 reportlab。"""
+    """注册中文字体到 reportlab。支持 .ttf/.ttc，macOS/Linux/Windows 全平台。"""
     global _CJK_FONT, _CJK_FONT_PATH
     if _CJK_FONT is not None:
         return
     for p in _FONT_CANDIDATES:
-        if Path(p).exists():
-            try:
-                with open(p, "rb") as f:
-                    font_data = f.read()
-                font_name = Path(p).stem
-                from io import BytesIO
-                pdfmetrics.registerFont(TTFont(font_name, BytesIO(font_data)))
-                _CJK_FONT = font_name
-                _CJK_FONT_PATH = p
-                log.info("PDF 中文字体注册: %s as %s", p, font_name)
-                return
-            except Exception as e:
-                log.warning("注册字体 %s 失败: %s", p, e)
-                continue
-    # 用 STSong-Light 内置 CID 字体
-    _CJK_FONT = "STSong-Light"
-    log.info("使用 reportlab 内置 STSong-Light CID 字体")
+        if not Path(p).exists():
+            continue
+        try:
+            font_name = Path(p).stem.replace(" ", "")
+            if p.lower().endswith(".ttc"):
+                # TrueType Collection：必须指定 subfontIndex，否则 ReportLab 报错
+                pdfmetrics.registerFont(TTFont(font_name, p, subfontIndex=0))
+            else:
+                pdfmetrics.registerFont(TTFont(font_name, p))
+            _CJK_FONT = font_name
+            _CJK_FONT_PATH = p
+            log.info("PDF 中文字体注册: %s as %s", p, font_name)
+            return
+        except Exception as e:
+            log.warning("注册字体 %s 失败: %s", p, e)
+            continue
+
+    # Fallback: 尝试 ReportLab 内置 CID 字体（需要 CMap 数据）
+    try:
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        _CJK_FONT = "STSong-Light"
+        log.info("使用 reportlab 内置 STSong-Light CID 字体")
+    except Exception as e:
+        # 最终 fallback：用 Helvetica（不支持中文但不会崩溃）
+        _CJK_FONT = "Helvetica"
+        log.warning(
+            "无法注册任何中文字体 (STSong-Light 也不可用: %s)，"
+            "PDF 中文将显示为方块。请安装中文字体或 reportlab[rl_accel]。", e
+        )
 
 _register_cjk_font()
 

@@ -1047,7 +1047,7 @@ def init_adapters() -> dict[str, BaseAdapter]:
                 _REGISTRY[inst.name] = inst
             except Exception:  # noqa: BLE001
                 pass
-        # Firecrawl 深度抓取适配器（需要 API key）
+        # Firecrawl 深度抓取适配器（免费层无需 API key，预算自管理）
         try:
             from tools.firecrawl_adapter import FirecrawlAdapter
             fc = FirecrawlAdapter()
