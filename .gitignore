@@ -76,3 +76,10 @@ htmlcov/
 
 # Generated run metrics
 backend/data/run_metrics/*.json
+
+# Generated reports and backend evaluation runtime data
+output/
+backend/memory/
+
+# Local launcher with machine-specific absolute paths
+scripts/start_frontend.py
