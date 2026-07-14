@@ -1186,14 +1186,14 @@ class Orchestrator:
             yield self._ev("scope", "thinking", "审查点超时，自动继续",
                             "等待 5 分钟无响应，按原定维度继续")
 
-        # —— 四层记忆①：加载 Industry RAG（playbooks）——
+        # —— 三层记忆·Domain：加载行业知识框架 ——
         self.industry_rag: dict = {}
         try:
             self.industry_rag = memory_store.load_industry_rag(tpl_key)
             n_pitfalls = len(self.industry_rag.get("failure_playbook", []))
             n_dims = len(self.industry_rag.get("industry_playbook", {}).get("key_dimensions", []))
             if n_pitfalls or n_dims:
-                yield self._ev("scope", "thinking", "加载行业知识库(Industry RAG)",
+                yield self._ev("scope", "thinking", "加载行业知识框架(Domain Memory)",
                                 f"{n_dims} 维度 · {n_pitfalls} 条失败模式 · "
                                 f"{len(self.industry_rag.get('evidence_playbook', {}).get('cross_validation_rules', []))} 条交叉验证规则")
         except Exception:  # noqa: BLE001
@@ -2167,7 +2167,7 @@ class Orchestrator:
         ]
         queries = _dedup_queries(dim_queries, red.get("search_queries", []))
 
-        # —— 四层记忆②：加载 Challenge Policy Store，匹配相关策略 ——
+        # —— 三层记忆·Behavior：加载证伪策略，匹配相关策略 ——
         matched_policies: list[dict] = []
         try:
             all_policies = memory_store.load_challenge_policies()
@@ -2474,7 +2474,7 @@ class Orchestrator:
                             f"连续 {ins.stale_count} 轮无实质进展，下轮将换检索角度",
                             insight_id=ins.id)
 
-        # —— 四层记忆②：更新挑战策略成功率 ——
+        # —— 三层记忆·Behavior：更新挑战策略成功率 ——
         # matched_policies 中，如果该策略的 challenge_type 对应的维度在 challenges 中有 high/medium severity，
         # 则该策略"成功"（发现了实际问题）
         if matched_policies:
@@ -2928,52 +2928,41 @@ class Orchestrator:
             yield self._ev("report", "diagnosis", "完整文档生成失败·结构化兜底",
                             f"终审模型各段均超时/出错({';'.join(diag_parts)})。已用结构化模板兜底（执行摘要表+基本事实+附录），不裸倒证据。", length=len(fb))
 
-        # —— 四层记忆③④：写入 Episodic Memory + 运行 Meta Reflection ——
+        # —— 持久化存储：写入 Experience + Reflection 蒸馏到 Domain/Behavior ——
         # 用局部变量记录状态（不在 _report 里改 self.run.status，让 run_pipeline 统一设）
         _episodic_status = "partial" if diag_parts else "done"
         try:
             run_summary = memory_store.build_run_summary(self.run)
             run_summary["status"] = _episodic_status  # 覆盖为最终状态
             memory_store.save_episodic(run_summary)
-            yield self._ev("report", "thinking", "记忆系统·写入执行日志",
-                            f"Episodic Memory 已保存（{len(run_summary.get('insights', []))} 条洞察）")
+            yield self._ev("report", "thinking", "记忆系统·写入 Experience",
+                            f"任务摘要已保存（{len(run_summary.get('insights', []))} 条洞察）")
         except Exception:  # noqa: BLE001
-            logger.warning("写入 Episodic 记忆失败，跳过", exc_info=True)
+            logger.warning("写入 Experience 记忆失败，跳过", exc_info=True)
             run_summary = {}
 
         if run_summary and not self.demo:
-            # Meta Reflection 只在真实分析模式下运行——demo 模式下 LLM 返回脚本化
-            # 假数据，写入记忆系统会污染策略库和反思库（已修复的膨胀 bug 根因）。
+            # Reflection: 蒸馏到 Domain + Behavior（demo 模式跳过防污染）
             try:
                 recent_eps = memory_store.load_recent_episodes(n=3)
-                past_refls = memory_store.load_reflections(n=5)
+                existing_knowledge = memory_store.load_existing_knowledge_summary()
                 reflection_raw = await asyncio.wait_for(self._chat_json(
                     prompts.meta_reflection_prompt(
                         json.dumps(run_summary, ensure_ascii=False)[:4000],
                         json.dumps(recent_eps, ensure_ascii=False)[:2000],
-                        json.dumps(past_refls, ensure_ascii=False)[:2000],
+                        json.dumps(existing_knowledge, ensure_ascii=False)[:2000],
                     ), role="reviewer"), timeout=60.0)
                 reflection = reflection_raw if isinstance(reflection_raw, dict) else {}
                 missed = reflection.get("missed_challenges", []) or []
                 pol_updates = reflection.get("policy_updates", []) or []
                 ind_updates = reflection.get("industry_pattern_updates", []) or []
                 assessment = _safe_str(reflection.get("overall_assessment", ""), 200)
-                # 保存反思
-                memory_store.save_reflection({
-                    "run_id": self.run.id,
-                    "query": self.run.query,
-                    "missed_challenges": missed if isinstance(missed, list) else [],
-                    "policy_updates": pol_updates if isinstance(pol_updates, list) else [],
-                    "industry_pattern_updates": ind_updates if isinstance(ind_updates, list) else [],
-                    "overall_assessment": assessment,
-                })
-                # 应用策略更新
+                # 策略更新 → Behavior
                 if isinstance(pol_updates, list) and pol_updates:
                     memory_store.apply_policy_updates(pol_updates)
-                # Industry RAG 自动扩展（P2）：真实分析后自动沉淀行业模式
+                # 行业模式 → Domain
                 if isinstance(ind_updates, list) and ind_updates:
                     _tk = self.run.profile.template_key if self.run.profile else "generic"
-                    # 按 playbook_type 分组调用
                     from collections import defaultdict as _dd
                     _groups: dict[str, list[dict]] = _dd(list)
                     for u in ind_updates:
@@ -2982,6 +2971,7 @@ class Orchestrator:
                             _groups[_pt].append(u)
                     for _pt, _items in _groups.items():
                         memory_store.update_industry_rag(_tk, _pt, _items)
+                # 策略卡 → Behavior
                 strategy_result = {"activated": [], "pending": [], "rejected": []}
                 try:
                     strategy_candidates = memory_store.generate_strategy_candidates(run_summary)
@@ -2990,16 +2980,16 @@ class Orchestrator:
                     )
                 except Exception:  # noqa: BLE001
                     logger.warning("生成/晋升 strategy cards 失败，跳过", exc_info=True)
-                yield self._ev("report", "thinking", "记忆系统·Meta Reflection 完成",
+                yield self._ev("report", "thinking", "记忆系统·Reflection 蒸馏完成",
                                 f"遗漏挑战 {len(missed) if isinstance(missed, list) else 0} 条 · "
-                                f"策略更新 {len(pol_updates) if isinstance(pol_updates, list) else 0} 条 · "
-                                f"行业模式更新 {len(ind_updates) if isinstance(ind_updates, list) else 0} 条 · "
+                                f"Behavior 策略更新 {len(pol_updates) if isinstance(pol_updates, list) else 0} 条 · "
+                                f"Domain 行业模式更新 {len(ind_updates) if isinstance(ind_updates, list) else 0} 条 · "
                                 f"策略卡激活 {len(strategy_result.get('activated', []))} 条"
                                 + (f" · {assessment[:60]}" if assessment else ""))
             except Exception:  # noqa: BLE001
-                logger.warning("Meta Reflection 失败，跳过（可选增强）", exc_info=True)
+                logger.warning("Reflection 蒸馏失败，跳过（可选增强）", exc_info=True)
         elif self.demo:
-            yield self._ev("report", "thinking", "记忆系统·Demo模式跳过 Meta Reflection",
+            yield self._ev("report", "thinking", "记忆系统·Demo模式跳过 Reflection",
                             "demo 模式不写入真实学习记忆，避免脚本化假数据污染策略库")
 
     def _select_report_insights(self) -> tuple[list[Insight], list[Insight]]:

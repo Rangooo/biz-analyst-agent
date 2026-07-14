@@ -1,7 +1,8 @@
 # 商业分析 Agent（Business Analyst Agent）
 
-[![CI](https://github.com/Rangooo/biz-analyst-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Rangooo/biz-analyst-agent/actions/workflows/ci.yml)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
+
+> **定位**：单用户本地运行的研究型 MVP。不包含身份认证、多租户隔离、服务端任务队列和跨进程并发控制。**不建议将后端直接暴露到公网。**
 
 一个面向公司/行业研究的自主商业分析流水线。输入研究对象后，agent 会自动完成
 `界定 → 联网采集 → 结构化分析 → 红队证伪 → 迭代补证 → 产出带证据链的报告`，
@@ -72,7 +73,7 @@ flowchart TB
     LLM --> Reviewer["reviewer"]
 
     Orch --> Store["SQLite Store<br/>runs、checkpoint、导出记录"]
-    Orch --> Memory["Memory Store<br/>行业模板、证伪策略、策略卡、评测反馈"]
+    Orch --> Memory["Memory Store<br/>Experience / Domain / Behavior"]
     Report --> Export["报告导出<br/>Markdown / PDF"]
 ```
 
@@ -180,13 +181,24 @@ Report   按动态维度组织报告 + 事实校验 + 质量评估 + 迭代改�
 
 ### 1. 安装依赖
 
-```bash
-# Python 依赖（建议用 venv 隔离）
-python3 -m venv .venv
-.venv/bin/pip install -r backend/requirements.txt
+**macOS / Linux：**
 
-# 前端依赖
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+
 cd frontend && npm install && cd ..
+```
+
+**Windows：**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r backend\requirements.txt
+
+cd frontend; npm install; cd ..
 ```
 
 ### 2. 配置 API Key（可选——不配也能跑演示模式）
@@ -202,11 +214,40 @@ cp .env.example .env
 
 ### 3. 一键启动
 
+**macOS / Linux：**
+
 ```bash
 ./start.sh
 ```
 
+**Windows：**
+
+```powershell
+# 后端
+cd backend; python -m uvicorn main:app --host 127.0.0.1 --port 8000
+# 前端（新终端）
+cd frontend; npm run dev
+```
+
 打开 http://localhost:5173 ，输入公司或行业，点"开始分析"。
+
+### 安全建议
+
+- 后端推荐只监听 `127.0.0.1`（默认）
+- 使用单个 Uvicorn worker（默认）
+- `APP_MODE=local` 仅适用于可信本机
+- 如果反向代理或部署到服务器，切换 `APP_MODE=server` 并自行补认证
+
+### 从旧版升级
+
+如果你之前使用过六存储（challenge_policies.json / strategy_cards.json / episodic/ 等），
+需要执行一次迁移脚本：
+
+```bash
+python scripts/migrate_memory.py
+```
+
+脚本会把旧文件移动到 `memory/_old/`，可重复运行（第二次自动跳过）。建议先备份 `memory/` 目录。
 
 ---
 
@@ -220,7 +261,7 @@ biz-analyst-agent/
 │   ├── prompts.py                 # 各阶段 prompt 模板
 │   ├── schemas.py                 # 洞察/证据/证伪记录/置信度 数据模型
 │   ├── store.py                   # SQLite 持久化
-│   ├── memory_store.py            # 四层长期记忆系统
+│   ├── memory_store.py            # 三类持久化存储 + Reflection 学习环
 │   ├── app_config.py              # 运行时配置与部署安全守卫
 │   ├── run_metrics.py             # 运行级质量评分
 │   ├── citation_validator.py      # 报告引用校验
@@ -264,7 +305,11 @@ biz-analyst-agent/
 │       ├── types.ts               # TypeScript 类型
 │       └── components/            # Timeline / InsightCard / ReportView / SettingsPanel / Charts
 ├── goldens/                       # Golden Answers 评测基线
-├── memory/                        # 四层长期记忆（运行时数据）
+├── memory/                        # 持久化存储（运行时数据，git 不跟踪）
+│   ├── experience.json            # 任务摘要 + 评测反馈
+│   ├── domain.json                # 行业分析框架
+│   ├── behavior.json              # 证伪/采集/报告策略
+│   └── domain.json.example        # 通用行业框架模板
 ├── config/                        # 信源 tier 配置
 ├── start.sh                       # 一键启动
 ├── Makefile                       # 构建/测试命令
@@ -277,8 +322,8 @@ biz-analyst-agent/
 
 - 四层测试：unit（纯函数）+ contract（接口契约）+ integration（pipeline 集成）+ smoke（真实 LLM 冒烟）。日常 quick tests 保持离线、快速、确定性。
 - Golden Answer Set：用真实可溯源的基准答案（9 案例，覆盖海内外/上市非上市/公司行业）验证真实 LLM 输出。离线自检零成本。
-- 四层记忆系统：Industry RAG（行业模板）+ Challenge Policy（证伪策略）+ Episodic（执行日志）+ Eval Feedback（评测发现），跨任务沉淀经验。
-- Strategy Card Evolution：任务结束后把采集/证伪/报告缺陷归因为可执行策略卡，下次同类任务自动应用。
+- 三类持久化存储 + Reflection 学习环：Experience（任务摘要，跨任务复盘输入）+ Domain（行业框架，决定看什么）+ Behavior（行为策略，决定怎么做）。Reflection 蒸馏 Experience 中的失败模式，直接写入 Domain/Behavior。
+- Strategy Card Evolution：任务结束后把采集/证伪/报告缺陷归因为可执行策略卡（存入 Behavior），下次同类任务自动应用。
 - 事实校验闭环：pipeline 内部 fact_check 提取断言并对照证据池验证，结果驱动报告迭代改进。eval_feedback 跨 run 传递泛化自知。
 - 评测驱动迭代：Report 阶段 quality_eval 循环（8 维度评分 + fact_check），不达标触发补证搜索 + 重写报告段落。
 - Token 成本面板：按阶段、角色和模型汇总调用次数、输入/输出 token 与估算成本，便于定位高成本环节。
@@ -287,10 +332,11 @@ biz-analyst-agent/
 
 ## 局限性
 
-- 本项目是分析工具，所有输出应由专业人士复核，不构成投资建议。
+- **不构成投资建议**：本项目是分析工具，所有输出应由专业人士复核。
+- **单用户本地产品**：不包含身份认证、多租户隔离和服务端任务队列。不要将后端直接暴露到公网。
 - 非上市公司公开数据稀疏，结论以定性为主，报告会明确标注数据可信度。
-- MVP 单机运行，未做多用户/鉴权/生产部署。
 - 涨跌颜色遵循中国习惯（涨红跌绿）。
+- 线程安全保证仅限单进程；多 worker 部署前需迁移到 SQLite 存储。
 
 ---
 

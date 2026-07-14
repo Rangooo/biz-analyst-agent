@@ -1,0 +1,46 @@
+{
+  "_comment": "Domain Memory — reusable industry analysis frameworks. Copy to domain.json on first setup.",
+  "generic": {
+    "industry_playbook": {
+      "key_dimensions": [
+        "规模与盈利质量",
+        "资产质量真实性",
+        "竞争格局",
+        "监管合规",
+        "战略动向"
+      ],
+      "common_pitfalls": [
+        "用单一季度数据推断年度趋势",
+        "用公司自报数据直接下结论未交叉验证",
+        "忽略行业周期性，在峰值/谷值线性外推"
+      ],
+      "key_metrics": []
+    },
+    "evidence_playbook": {
+      "preferred_sources": [
+        "SEC Filing",
+        "监管披露",
+        "电话会原文"
+      ],
+      "distrust_sources": [
+        "公司自报利好数据未经第三方核实"
+      ],
+      "cross_validation_rules": [
+        "涉及比率指标（逾期率/利润率）必须查分母变化",
+        "涉及增长结论必须对比历史至少 2 个周期"
+      ]
+    },
+    "failure_playbook": [
+      {
+        "pattern": "比率改善结论",
+        "trap": "分母做大机械拉低比率，非真实改善",
+        "fix": "查分母增速 + vintage / 明细数据"
+      },
+      {
+        "pattern": "利润高增长结论",
+        "trap": "一次性收益/减值回拨/合并口径变化掩盖主业趋势",
+        "fix": "拆主业 vs 非经常性 + 同口径对比"
+      }
+    ]
+  }
+}
