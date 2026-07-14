@@ -77,11 +77,11 @@ def has_search_backend() -> bool:
 
 
 def search_status() -> dict:
-    """搜索后端健康：综合 Exa(主) + Tavily/Serper(补充) 判断。
+    """搜索后端健康：综合 Exa(主) + Tavily/Serper(补充) + Firecrawl(兜底) 判断。
 
     status ∈ ok|degraded|unavailable：
     - ok: 至少有 Exa 主搜索源（免费且语义好），或 Tavily 正常可用
-    - degraded: 无 Exa，且 Tavily 耗尽但 Serper 可用（降级但不中断）
+    - degraded: 无 Exa，且 Tavily 耗尽但 Serper/Firecrawl 可用（降级但不中断）
     - unavailable: 所有搜索源都不可用
     """
     tavily = bool(os.getenv("TAVILY_API_KEY"))
@@ -89,21 +89,28 @@ def search_status() -> dict:
     exa = bool(os.getenv("EXA_API_KEY") or shutil.which("mcporter"))
     exhausted = _TAVILY_EXHAUSTED
 
-    if not exa and not tavily and not serper:
+    # Firecrawl 免费层始终可用（只要有预算）
+    try:
+        from tools.firecrawl_adapter import firecrawl_available
+        firecrawl = firecrawl_available()
+    except ImportError:
+        firecrawl = False
+
+    if not exa and not tavily and not serper and not firecrawl:
         st = "unavailable"
     elif exa:
         # 有 Exa 主搜索源 → 搜索功能正常，Tavily/Serper 只是补充
         st = "ok"
     else:
-        # 无 Exa，靠 Tavily/Serper
-        if exhausted and serper:
-            st = "degraded"  # Tavily 挂了，Serper 顶上
-        elif exhausted and not serper:
-            st = "unavailable"  # Tavily 挂了，无 Serper，无 Exa
+        # 无 Exa，靠 Tavily/Serper/Firecrawl
+        if exhausted and (serper or firecrawl):
+            st = "degraded"  # Tavily 挂了，Serper/Firecrawl 顶上
+        elif exhausted and not serper and not firecrawl:
+            st = "unavailable"  # Tavily 挂了，无 Serper，无 Firecrawl，无 Exa
         else:
             st = "ok"
     return {"status": st, "tavily": tavily, "serper": serper, "exa": exa,
-            "exhausted": exhausted,
+            "firecrawl": firecrawl, "exhausted": exhausted,
             "cache_size": len(_CACHE)}
 
 
