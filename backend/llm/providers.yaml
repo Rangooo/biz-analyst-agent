@@ -7,6 +7,13 @@
 # extra_headers 用于非标准鉴权（值为环境变量名，调用时注入）。
 
 providers:
+  tokenhub-hy3:
+    label: "TokenHub HY3"
+    base_url: "https://tokenhub.tencentmaas.com/v1"
+    model: "hy3"
+    api_key_env: "TOKENHUB_API_KEY"
+    roles: ["analyst", "reviewer", "red_team"]
+    is_primary: true
   deepseek-v4-pro:
     label: "DeepSeek-V4-Pro"
     base_url: "https://api.deepseek.com/v1"
@@ -62,4 +69,4 @@ providers:
 role_defaults: {}
 
 # fallback 顺序：首选不可用时降级（运行时按可用集合动态过滤）
-fallback_order: ["deepseek-v4-pro", "deepseek-v4-flash", "openai", "claude", "gemini", "qwen", "welm", "ollama"]
+fallback_order: ["tokenhub-hy3", "deepseek-v4-pro", "deepseek-v4-flash", "openai", "claude", "gemini", "qwen", "welm", "ollama"]

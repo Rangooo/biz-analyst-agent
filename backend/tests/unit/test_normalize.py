@@ -4,9 +4,20 @@ from __future__ import annotations
 import pytest
 
 from orchestrator import _normalize_narrative, _strip_llm_references, _extract_cited_ids
+from reporting.structure import strip_generated_report_tail
+from reporting.structure import check_structure_invariants, repair_structure_invariants_once
 
 
 # --------------- _normalize_narrative ---------------
+
+
+def test_strip_generated_report_tail_is_idempotent():
+    report = (
+        "## 执行摘要\n正文[^1]\n\n"
+        "### 参考文献（核心引用 1 条）\n- **[^1]** 来源\n\n"
+        "---\n\n数据截至 2026-01-01 · 报告生成 2026-01-02"
+    )
+    assert strip_generated_report_tail(report) == "## 执行摘要\n正文[^1]"
 
 
 class TestNormalizeNarrative:
@@ -100,3 +111,15 @@ class TestStripLLMReferences:
         result = _normalize_narrative(body)
         assert "**参考文献**" not in result
         assert "[^1]:" not in result
+
+    def test_structure_repair_keeps_all_generated_reference_mappings(self):
+        references = "\n".join(
+            f"- **[^{idx}]** Source {idx}. (2026). Title {idx}."
+            for idx in range(1, 21)
+        )
+        body = f"## 核心发现\n正文[^20]。\n\n---\n\n#### 参考文献\n\n{references}"
+        violations = check_structure_invariants(body)
+        repaired, remaining = repair_structure_invariants_once(body, violations)
+        assert "参考文献 20 条 > 15" not in violations
+        assert "- **[^20]** Source 20." in repaired
+        assert "参考文献 20 条 > 15" not in remaining

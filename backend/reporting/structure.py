@@ -69,6 +69,34 @@ def _strip_llm_references(body: str) -> str:
     return "\n".join(result)
 
 
+def strip_generated_report_tail(body: str) -> str:
+    """Remove a previously code-generated appendix/footer before reprocessing.
+
+    This makes offline evaluation reprocessing idempotent.  Normal report
+    generation does not need it because it starts from a fresh model body.
+    """
+    if not body:
+        return body
+    lines = body.splitlines()
+    cut = len(lines)
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if re.match(
+            r"^#{3,6}\s*(?:数据缺口|参考文献)(?:\s|（|\(|$)",
+            stripped,
+        ):
+            cut = idx
+            break
+        if (
+            stripped == "---"
+            and idx + 1 < len(lines)
+            and lines[idx + 1].strip().startswith("数据截至 ")
+        ):
+            cut = idx
+            break
+    return "\n".join(lines[:cut]).rstrip()
+
+
 def _heading_level(line: str) -> int:
     m = re.match(r"^(#{1,6})\s+", line or "")
     return len(m.group(1)) if m else 0
@@ -246,10 +274,6 @@ def check_structure_invariants(narrative: str, insights: Iterable[Insight] | Non
     if any(re.match(r"^\[\^\d+\]:", l.strip()) for l in lines):
         violations.append("有脚注定义行残留")
 
-    apa_count = sum(1 for l in lines if l.strip().startswith("- **[^"))
-    if apa_count > 15:
-        violations.append(f"参考文献 {apa_count} 条 > 15")
-
     if any(l.strip().startswith("**") and "参考文献" in l for l in lines):
         violations.append("有 LLM 参考文献标题残留")
 
@@ -285,17 +309,12 @@ def repair_structure_invariants_once(
 
     repaired = _normalize_narrative(narrative)
     cleaned: list[str] = []
-    reference_count = 0
     for line in repaired.split("\n"):
         stripped = line.strip()
         if re.match(r"^\[\^\d{1,3}\]:", stripped):
             continue
         if stripped.startswith("**") and ("参考文献" in stripped or "References" in stripped):
             continue
-        if stripped.startswith("- **[^"):
-            reference_count += 1
-            if reference_count > 15:
-                continue
         cleaned.append(line)
 
     repaired = re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned)).strip()

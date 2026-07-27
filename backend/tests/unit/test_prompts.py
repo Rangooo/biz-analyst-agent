@@ -82,6 +82,16 @@ class TestNarrativeGovernance:
         assert "TAM/SAM/SOM" in facts_ind
         assert "CR3/CR5/CR8" in facts_ind
 
+    def test_full_prompt_uses_grounded_writing_contract(self):
+        msgs = prompts.narrative_full_prompt(
+            "{}", "证据", "洞察", "风险",
+            writing_contract="【Agent写作契约】不得虚构阈值、概率或影响金额",
+        )
+        text = "\n".join(m["content"] for m in msgs)
+        assert "不得虚构阈值、概率或影响金额" in text
+        assert "不强制给情景概率或跟踪阈值" in text
+        assert "数据可得性与口径" in text
+
 
 class TestQualityEvalPrompt:
     def test_default_score_2(self):
@@ -93,7 +103,6 @@ class TestQualityEvalPrompt:
     def test_high_total_requires_issues(self):
         msgs = prompts.quality_eval_prompt("报告内容", ["维度1"])
         assert "至少3个具体问题" in msgs[0]["content"]
-
 
 class TestSparseDataPrompt:
     def test_sparse_triggers_advice(self):

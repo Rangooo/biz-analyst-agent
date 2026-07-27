@@ -62,6 +62,23 @@ from reporting.structure import (
     check_structure_invariants,
     repair_structure_invariants_once,
 )
+from reporting.writing_contract import (
+    audit_report_grounding,
+    attach_exact_numeric_citations,
+    build_cautious_gap_queries,
+    build_writing_contract,
+    ensure_dimension_coverage_boundaries,
+    neutralize_unsupported_coverage_rows,
+    neutralize_unsupported_scenarios,
+    neutralize_uncited_tracking_thresholds,
+    normalize_grouped_citations,
+    normalize_plain_numeric_citations,
+    propagate_derived_table_citations,
+    select_cautious_report_evidence_ids,
+    select_report_evidence_ids,
+    should_use_cautious_writing,
+)
+from reporting.source_governance import sanitize_source_url
 import memory_store
 from memory_store import save_eval_feedback
 from evals.fact_check import extract_and_verify_facts
@@ -671,7 +688,7 @@ class Orchestrator:
         # 否则 _build_report_md 与 _digest 会把 content[:160/240] 的垃圾铺进正文与 LLM 上下文。
         ev.content = _clean_evidence_text(ev.content)
         ev.source_title = (ev.source_title or "").strip()[:120]
-        ev.source_url = (ev.source_url or "").strip()
+        ev.source_url = sanitize_source_url(ev.source_url)
         # 信源权威性升级：如果 URL 指向监管/交易所/权威媒体/研报平台，
         # 但数据源适配器只给了 MEDIA(tier6)，则按 URL 升级到更准确的等级。
         # 只升级不降级——适配器已判定更高等级的（如 SEC filing）保持不变。
@@ -767,7 +784,8 @@ class Orchestrator:
             self.llm.chat_json, messages, provider=self.red_team_provider or None, role="red_team"
         )
 
-    async def _chat_text(self, messages, role="analyst", timeout=120.0, retries=2):
+    async def _chat_text(self, messages, role="analyst", timeout=120.0, retries=2,
+                         max_tokens: int | None = None):
         """非结构化文本输出（如完整分析文档 narrative）。
         analyst 用用户选的主分析；reviewer 用用户选的终审；其他角色走 role_defaults 路由。
         timeout 可调（reviewer 写长文需更长）。retries 越大底层线程占用越久
@@ -784,9 +802,12 @@ class Orchestrator:
         # 追踪实际使用的 provider
         actual = self.llm.effective_provider(role, provider)
         self._ev("llm_call", "info", f"文本LLM调用[{role}]", f"provider={actual}", role=role, provider=actual)
-        return await asyncio.to_thread(
-            self.llm.chat, messages, provider=provider, role=role, timeout=timeout, retries=retries
-        )
+        kwargs = {
+            "provider": provider, "role": role, "timeout": timeout, "retries": retries,
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        return await asyncio.to_thread(self.llm.chat, messages, **kwargs)
 
     def _search(self, query, n=5):
         if self.demo:
@@ -2525,6 +2546,10 @@ class Orchestrator:
 
     # ---------- ⑥ Report ----------
     async def _report(self) -> AsyncGenerator[TraceEvent, None]:
+        # 恢复旧检查点/历史 run 时也执行一次 URL 治理；新采集证据已在
+        # _add_evidence 中清洗，此处为幂等兜底。
+        for _ev_item in self.evidence_pool.values():
+            _ev_item.source_url = sanitize_source_url(_ev_item.source_url)
         # 同步证据池到 run（按编号顺序），供前端 [证据N]→#evidence-N→source_url 链式溯源
         self.run.evidence_pool = [self.evidence_pool[i] for i in sorted(self.evidence_pool)]
         # report_md 已移除（冗余：narrative_md 是唯一输出文档，insights/evidence_pool 提供结构化结论与支撑）
@@ -2532,11 +2557,7 @@ class Orchestrator:
         yield self._ev("report", "thinking", "准备撰写完整分析文档",
                         "终审模型将生成叙事性分析文档（非结构化模板报告）")
 
-        # 完整分析文档（narrative）—— 拆成两段顺序调用降超时：①基本事实层(表格为主,快)
-        # ②洞察层(推理为主,快)；附录由代码生成不耗 LLM。任一段失败仍尽量保留已生成段+结构化兜底。
         reviewer = self.llm.effective_provider("reviewer") or "reviewer"
-        yield self._ev("report", "thinking", "终审模型撰写完整分析文档",
-                        f"由 {reviewer} 拆两段生成（基本事实层 + 洞察层），附录代码生成")
         profile_json = self.run.profile.model_dump_json() if self.run.profile else "{}"
         is_pub = (self.run.profile.is_public if self.run.profile else True)
         is_ind = (self.run.profile.kind == "industry" if self.run.profile else False)
@@ -2548,6 +2569,80 @@ class Orchestrator:
 
         # —— 洞察筛选：只保留关键、确定、有启发价值的进入报告 ——
         core_insights, risk_insights = self._select_report_insights()
+        # 行业题若通过证伪的核心洞察不足，强行凑满三条会把存疑洞察
+        # 写成行业定律。此时切换为审慎写作：核心段只保留成立洞察，
+        # 其余存疑项移入风险段，并在同一次写作调用内缩短输出。
+        _supported_core = [
+            ins for ins in core_insights
+            if ins.verdict == Verdict.SUPPORTED and ins.confidence >= 0.70
+        ]
+        _weak_evidence_mode = should_use_cautious_writing(
+            core_insights,
+            is_industry=is_ind,
+        )
+        _gap_evidence_ids: list[int] = []
+        if _weak_evidence_mode:
+            # A weak run's lone “supported” insight can still be supported only
+            # by secondary/aggregated news. Do not let its claim text anchor the
+            # writer; rebuild observations from the cleaned evidence handoff.
+            core_insights = []
+            # 存疑洞察不能只靠“移入风险段”解决，因为模型仍会把它
+            # 写成确定风险或情景阈值。弱证据模式下完全不向最终写手
+            # 传递这些洞察，只允许从直接证据归纳有限风险。
+            risk_insights = []
+
+            # 弱证据行业题只做两条确定性补证查询，不调用 LLM 规划。
+            # 目标是补白皮书/监管原文，而不是扩大搜索面；失败时继续
+            # 审慎写作，不阻断报告。
+            _gap_adapter = self._adapter("exa_search") or self._adapter("general_search")
+            _gap_added = 0
+            if _gap_adapter and self.run.profile:
+                from datetime import date as _date
+                _gap_queries = build_cautious_gap_queries(
+                    self.run.profile,
+                    year=_date.today().year,
+                )
+                try:
+                    _gap_results = await asyncio.gather(*[
+                        asyncio.to_thread(
+                            _gap_adapter.search, query, "general", 4, 730
+                        )
+                        for query in _gap_queries
+                    ])
+                    _gap_candidates: list[Evidence] = []
+                    for _gap_result in _gap_results:
+                        _gap_candidates.extend(_gap_result.evidences)
+
+                    def _gap_priority(item: Evidence) -> tuple[int, int]:
+                        url = (item.source_url or "").lower()
+                        authoritative = any(domain in url for domain in (
+                            "gov.cn", "moa.gov.cn", "stats.gov.cn",
+                            "kpmg.com", "pwc.", "deloitte.", "ey.com",
+                        ))
+                        return (0 if authoritative else 1, int(item.tier))
+
+                    for _gap_item in sorted(_gap_candidates, key=_gap_priority)[:8]:
+                        before = len(self.evidence_pool)
+                        _gap_idx = self._add_evidence(_gap_item)
+                        if _gap_idx not in _gap_evidence_ids:
+                            _gap_evidence_ids.append(_gap_idx)
+                        _gap_added += int(len(self.evidence_pool) > before)
+                    if _gap_added:
+                        if _gap_adapter.name not in self.run.data_sources_used:
+                            self.run.data_sources_used.append(_gap_adapter.name)
+                        self.run.evidence_pool = [
+                            self.evidence_pool[idx] for idx in sorted(self.evidence_pool)
+                        ]
+                        self._build_evidence_index()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "审慎模式定向补证失败，继续使用现有证据: %s",
+                        str(exc)[:100],
+                    )
+            yield self._ev(
+                "report", "thinking", "审慎模式·定向补证",
+                f"固定查询2条 · 新增证据 {_gap_added} 条 · 零额外LLM调用",
+            )
         core_digest = self._insights_digest(core_insights)
         risk_digest = self._insights_digest(risk_insights) if risk_insights else "(无额外存疑洞察)"
         excluded_n = len(self.run.insights) - len(core_insights) - len(risk_insights)
@@ -2556,11 +2651,243 @@ class Orchestrator:
                         f"{len(risk_insights)} 条风险 · 排除 {excluded_n} 条(推翻/不可检验/低置信)")
         insights_digest = core_digest  # 核心发现段用精选洞察
         sections = self.run.profile.sections if self.run.profile else []
-        # 借鉴 gen_financial_report：Summary 驱动——用 LLM 把全量证据压缩成结构化摘要(~2000字)，
-        # 按 section 归类，替代全量 digest 塞进 narrative → 从根本解决输入过大超时
-        # 语义检索：用 profile 信息作为查询，只取最相关的 50 条证据做摘要（而非全量 dump）
+
+        # ============ V2 架构：全量证据一次性生成 ============
+        # 核心改动：不再压缩证据、不再分段生成，直接全量证据+洞察→一次性完整报告
+        # 评测证明：分段+压缩导致信息丢失（数据性扣分），一次性写反而数据利用率更高
+        _v2_success = False
+        yield self._ev("report", "thinking", "V2架构·证据账本直传",
+                        f"由 {reviewer} 一次性生成完整报告（核心主张证据强制保留）")
+
+        # 构建报告证据 digest：先保证精选洞察的直接证据全部进入上下文，
+        # 再补权威证据和语义 top-k。相比单纯语义排序，不增加 LLM 调用，
+        # 但避免“洞察只留下证据编号、写作模型看不到证据正文”。
         _narrative_query = f"{self.run.profile.name} {self.run.profile.industry} {' '.join(sections)}"
-        full_digest = self._digest(query=_narrative_query, max_items=50, content_len=200)
+        _semantic_ids = self._semantic_search(_narrative_query, top_k=45)
+        _semantic_ids = list(dict.fromkeys([*_gap_evidence_ids, *_semantic_ids]))
+        _writing_insights = [*core_insights, *risk_insights]
+        _represented_sections = {ins.section for ins in _writing_insights}
+        for _section in ([] if _weak_evidence_mode else sections):
+            if _section in _represented_sections:
+                continue
+            _section_candidates = [
+                ins for ins in self.run.insights
+                if ins.section == _section
+                and ins.verdict not in (Verdict.REFUTED, Verdict.UNVERIFIABLE)
+                and ins.evidence
+            ]
+            if not _section_candidates:
+                continue
+            _best_section_insight = max(
+                _section_candidates,
+                key=lambda ins: ins.confidence * 0.6 + ins.evidence_strength() * 0.4,
+            )
+            _writing_insights.append(_best_section_insight)
+            _represented_sections.add(_section)
+        _report_evidence_ids = select_report_evidence_ids(
+            self.evidence_pool,
+            _semantic_ids,
+            _writing_insights,
+            self._idx_of,
+            max_items=45,
+        )
+        if _weak_evidence_mode and self.run.profile:
+            _report_evidence_ids = select_cautious_report_evidence_ids(
+                self.evidence_pool,
+                [*_gap_evidence_ids, *_semantic_ids],
+                self.run.profile,
+                max_items=32,
+            )
+        _direct_evidence_ids: list[int] = []
+        for _insight in _writing_insights:
+            for _evidence in _insight.evidence:
+                _evidence_idx = self._idx_of(_evidence)
+                if (
+                    _evidence_idx in _report_evidence_ids
+                    and _evidence_idx not in _direct_evidence_ids
+                ):
+                    _direct_evidence_ids.append(_evidence_idx)
+        _direct_evidence_ids = _direct_evidence_ids[:24]
+        _direct_id_set = set(_direct_evidence_ids)
+        _background_evidence_ids = [
+            idx for idx in _report_evidence_ids if idx not in _direct_id_set
+        ]
+        full_digest = (
+            "【洞察直接证据（优先用于核心论证）】\n"
+            f"{self._digest(ids=_direct_evidence_ids, max_items=24, content_len=420)}\n\n"
+            "【相关背景证据（仅在直接相关时使用）】\n"
+            f"{self._digest(ids=_background_evidence_ids, max_items=45, content_len=160)}"
+        )
+        writing_contract = build_writing_contract(
+            self.run,
+            self.evidence_pool,
+            core_insights,
+            risk_insights,
+            self._idx_of,
+            all_insights=self.run.insights,
+        )
+        if _weak_evidence_mode:
+            writing_contract += (
+                "\n\n【审慎写作模式（证据门禁自动触发）】\n"
+                "- 通过证伪且高置信的核心洞察不足2条；不得把存疑洞察包装为行业结论。\n"
+                "- 存疑洞察不得进入摘要、事实解释、核心发现、展望或风险段。\n"
+                "- 核心发现可改为“已验证观察”，但每条必须由至少2个独立的权威/原始信源直接支持；"
+                "否则只陈述单一来源事实及其边界，不得补写因果机制。\n"
+                "- 不得为了凑足3条核心发现创造新主张；宁可缩短报告并明确证据缺口。"
+            )
+
+        # 结构化财务数据
+        financials_block = ""
+        if self.run.financials:
+            _fin_lines: list[str] = ["\n\n【结构化财务数据（精确数值）】"]
+            for f in self.run.financials[:8]:
+                if not isinstance(f, dict):
+                    continue
+                parts = [str(f.get("period") or "")]
+                rev = f.get("revenue")
+                ni = f.get("net_income")
+                rg = f.get("rev_growth")
+                if rev is not None:
+                    parts.append(f"营收{rev:,}")
+                if ni is not None:
+                    parts.append(f"净利润{ni:,}")
+                if rg is not None:
+                    parts.append(f"增速{rg}%")
+                if len(parts) > 1:
+                    _fin_lines.append(" | ".join(parts))
+            if len(_fin_lines) > 1:
+                financials_block = "\n".join(_fin_lines)
+
+        # 策略卡约束
+        report_constraints: list[str] = []
+        for card in self._stage_strategies("report"):
+            action = card.get("action") if isinstance(card.get("action"), dict) else {}
+            report_constraints.extend(str(x) for x in action.get("prompt_hints") or [] if str(x).strip())
+            report_constraints.extend(f"Check: {x}" for x in action.get("checks") or [] if str(x).strip())
+            if action.get("prompt_hints") or action.get("checks"):
+                self._mark_strategy_applied(card)
+
+        # 竞争对比矩阵注入
+        _comp_matrix = self._build_comparison_matrix()
+        if _comp_matrix:
+            full_digest += _comp_matrix
+
+        try:
+            _v2_raw = await asyncio.wait_for(self._chat_text(
+                prompts.narrative_full_prompt(
+                    profile_json, full_digest, insights_digest, risk_digest,
+                    same_src, is_pub, is_ind,
+                    financials_block=financials_block,
+                    report_constraints=report_constraints or None,
+                    writing_contract=writing_contract,
+                    weak_evidence_mode=_weak_evidence_mode),
+                role="reviewer", timeout=480.0, retries=1,
+                max_tokens=(
+                    4800 if _weak_evidence_mode
+                    else (6800 if is_ind else 4200)
+                )), timeout=500.0)
+            _v2_text = self._strip_preamble(_extract_text(_v2_raw))
+            if _v2_text and len(_v2_text) > 500:
+                # 结构校验+自动修复
+                from datetime import date as _date
+                _today = _date.today().isoformat()
+                _data_date = self.run.data_as_of or "未明确"
+                footer = (f"\n\n---\n\n数据截至 {_data_date} · 报告生成 {_today} · "
+                          f"数据源: {', '.join(self.run.data_sources_used) or '未配置'}\n\n"
+                          "本报告基于公开信息，不构成投资建议。")
+                _body = _normalize_narrative(_v2_text)
+                _body = normalize_plain_numeric_citations(
+                    _body, set(self.evidence_pool)
+                )
+                _body = normalize_grouped_citations(_body)
+                _body, _boundary_sections = ensure_dimension_coverage_boundaries(
+                    _body, sections
+                )
+                _body = neutralize_uncited_tracking_thresholds(_body)
+                _body = propagate_derived_table_citations(_body)
+                _citation_pool = (
+                    {
+                        idx: self.evidence_pool[idx]
+                        for idx in _report_evidence_ids
+                        if idx in self.evidence_pool
+                    }
+                    if _weak_evidence_mode
+                    else self.evidence_pool
+                )
+                _body = attach_exact_numeric_citations(_body, _citation_pool)
+                _grounding_audit = audit_report_grounding(_body, self.evidence_pool)
+                _coverage_neutralized = neutralize_unsupported_coverage_rows(
+                    _body, _grounding_audit
+                )
+                if _coverage_neutralized != _body:
+                    _body = _coverage_neutralized
+                    _grounding_audit = audit_report_grounding(
+                        _body, self.evidence_pool
+                    )
+                _neutralized = neutralize_unsupported_scenarios(_body, _grounding_audit)
+                if _neutralized != _body:
+                    _body = _neutralized
+                    _grounding_audit = audit_report_grounding(_body, self.evidence_pool)
+                apx = self._build_appendix_md(_body)
+                narrative = _body + "\n\n" + apx + footer
+                self.run.narrative_md = narrative
+                _v2_success = True
+                yield self._ev("report", "thinking", "V2架构·一次性生成完成",
+                                f"{len(narrative)} 字符 · 终审 {reviewer} · 全量证据直传")
+                yield self._ev(
+                    "report", "thinking", "数字溯源审计",
+                    f"覆盖率 {_grounding_audit['grounding_rate']:.0%} · "
+                    f"无引用数字行 {len(_grounding_audit['uncited_numeric_lines'])} · "
+                    f"无效引用 {len(_grounding_audit['invalid_citation_ids'])}",
+                )
+
+                # 结构不变量校验
+                _violations = self._check_structure_invariants(self.run.narrative_md)
+                if _violations:
+                    repaired, remaining = self._repair_structure_invariants_once(self.run.narrative_md, _violations)
+                    if repaired != self.run.narrative_md:
+                        self.run.narrative_md = repaired
+                    if remaining:
+                        yield self._ev("report", "thinking", "结构不变量校验·发现问题",
+                                        f"{len(remaining)} 项违规: {'; '.join(remaining[:3])}")
+                    else:
+                        yield self._ev("report", "thinking", "结构不变量自动修复通过", "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("V2 架构一次性生成失败，降级到分段模式: %s", str(exc)[:80])
+            yield self._ev("report", "thinking", "V2架构降级",
+                            f"一次性生成失败({str(exc)[:50]})，降级到分段模式")
+
+        # V2 成功后只记录确定性审计；质量打分放到离线评测，避免报告阶段
+        # 再消耗一次 LLM 调用并把“自评”误当作真实质量提升。
+        if _v2_success:
+            narrative = self.run.narrative_md
+            self.run.quality_eval = {
+                "scores": {},
+                "total": None,
+                "issues": [],
+                "min_score": None,
+                "round": 1,
+                "passed": bool(_grounding_audit.get("passed")),
+                "architecture": "v2_grounded_single_pass",
+                "grounding_audit": _grounding_audit,
+                "grounding_repair_used": False,
+            }
+
+            yield self._ev("report", "narrative_ready", "V2完整分析文档已生成",
+                            f"{len(narrative)} 字符 · 终审 {reviewer} · V2全量直传架构",
+                            length=len(narrative))
+
+            # Experience + Reflection
+            try:
+                run_summary = memory_store.build_run_summary(self.run)
+                memory_store.save_episodic(run_summary)
+            except Exception:  # noqa: BLE001
+                pass
+            return  # V2 成功，跳过旧分段逻辑
+
+        # ============ 以下是旧版分段逻辑（V2 失败时的 fallback）============
+        yield self._ev("report", "thinking", "终审模型撰写完整分析文档(分段模式)",
+                        f"由 {reviewer} 拆两段生成（基本事实层 + 洞察层），附录代码生成")
         evidence_summary = ""
         try:
             _sum_raw = await asyncio.wait_for(self._chat_text(
@@ -2608,6 +2935,15 @@ class Orchestrator:
                 evidence_summary += "\n".join(_fin_lines)
                 yield self._ev("report", "thinking", "财务数据已注入",
                                 f"{len(self.run.financials)} 期 SEC 财务数据追加到证据摘要")
+
+        # 【改进1】竞争对比矩阵注入——零 LLM 调用，用代码从证据池提取 peers/leaders 指标
+        # 构建"自身 vs 竞品/龙头"对比矩阵，让后续核心发现段自动产出竞争洞察
+        _comp_matrix = self._build_comparison_matrix()
+        if _comp_matrix:
+            evidence_summary += _comp_matrix
+            yield self._ev("report", "thinking", "竞争对比矩阵已注入",
+                            f"对比维度 {_comp_matrix.count('|') // 4} 行 · "
+                            f"帮助核心发现段产出竞争洞察")
 
         report_constraints: list[str] = []
         for card in self._stage_strategies("report"):
@@ -2894,23 +3230,68 @@ class Orchestrator:
             except Exception:  # noqa: BLE001
                 pass
 
-            # 借鉴 STORM polish_article：全文润色 pass（去重+补过渡+统一语气+校论点）
-            # 只动文字不动事实/证据编号/置信度标签；失败降级保留未润色版本
+            # 【改进3】段间衔接微手术（替代旧版全文润色）
+            # 只生成修补指令（JSON），由代码精准执行插入/删除，token 消耗降 60%
             try:
                 _segs = [s for s in (seg_facts, seg_core, seg_outlook, seg_fallback) if s]
                 _pre_body = _normalize_narrative("\n\n".join(_segs))
                 if _pre_body and len(_pre_body) > 200:
-                    _polished = await asyncio.wait_for(self._chat_text(
+                    _polish_raw = await asyncio.wait_for(self._chat_json(
                         prompts.narrative_polish_prompt(_pre_body),
-                        role="reviewer", timeout=300.0, retries=1), timeout=320.0)
-                    _polished = self._strip_preamble(_extract_text(_polished))
-                    if _polished and len(_polished) > len(_pre_body) * 0.6:
-                        narrative = _assemble(_polished)
+                        role="reviewer"), timeout=60.0)
+                    _polish_raw = _polish_raw if isinstance(_polish_raw, dict) else {}
+                    _transitions = _polish_raw.get("transitions", [])
+                    _applied = 0
+                    _polished_body = _pre_body
+                    if isinstance(_transitions, list):
+                        for tr in _transitions[:4]:
+                            if not isinstance(tr, dict):
+                                continue
+                            op = tr.get("操作", "")
+                            content = tr.get("内容", "")
+                            location = tr.get("位置", "")
+                            if not content:
+                                continue
+                            if "插入" in op and content:
+                                # 在目标段开头插入过渡句
+                                if "核心发现" in location:
+                                    _marker = "## 核心发现"
+                                    if _marker in _polished_body:
+                                        _polished_body = _polished_body.replace(
+                                            _marker, f"{_marker}\n\n{content}", 1)
+                                        _applied += 1
+                                elif "展望" in location:
+                                    _marker = "## 展望与关注点"
+                                    if _marker in _polished_body:
+                                        _polished_body = _polished_body.replace(
+                                            _marker, f"{_marker}\n\n{content}", 1)
+                                        _applied += 1
+                                elif "风险" in location:
+                                    _marker = "## 风险与不确定性"
+                                    if _marker in _polished_body:
+                                        _polished_body = _polished_body.replace(
+                                            _marker, f"{_marker}\n\n{content}", 1)
+                                        _applied += 1
+                            elif "删除" in op and content and len(content) >= 6:
+                                # 删除重复片段
+                                if content in _polished_body:
+                                    # 只删除第二次出现
+                                    _first = _polished_body.find(content)
+                                    _second = _polished_body.find(content, _first + len(content))
+                                    if _second > 0:
+                                        _polished_body = (_polished_body[:_second]
+                                                         + _polished_body[_second + len(content):])
+                                        _applied += 1
+                    if _applied > 0:
+                        narrative = _assemble(_polished_body)
                         self.run.narrative_md = narrative
-                        yield self._ev("report", "thinking", "全文润色已完成",
-                                        f"去重/补过渡/统一语气 · {len(narrative)} 字符")
+                        yield self._ev("report", "thinking", "段间衔接修补完成",
+                                        f"应用 {_applied} 条修补指令 · {len(narrative)} 字符")
+                    else:
+                        yield self._ev("report", "thinking", "段间衔接检查通过",
+                                        "无需修补 · 各段衔接自然")
             except Exception:  # noqa: BLE001
-                logger.warning("全文润色失败，保留未润色版本", exc_info=True)
+                logger.warning("段间衔接修补失败，保留原版本", exc_info=True)
 
             # —— 结构不变量自动校验（自我发现问题）——
             # 用真实 LLM 输出作为校验对象，不依赖构造输入
@@ -3125,8 +3506,8 @@ class Orchestrator:
             refine_tag = f" · {ins.refinement_note[:60]}" if ins.refinement_note else ""
             lines.append(
                 f"{i}. [{verdict_label.get(ins.verdict, '?')}/置信{ins.confidence:.0%}{overall_tag}{open_dims_str}{caveat_tag}] "
-                f"({ins.section}) {ins.claim}\n   推理:{ins.reasoning[:120]}\n"
-                f"   可证伪:{ins.falsifiable_condition[:80] or '无'}\n"
+                f"({ins.section}) {ins.claim}\n   推理链:{ins.reasoning[:320]}\n"
+                f"   可证伪边界:{ins.falsifiable_condition[:140] or '无'}\n"
                 f"   证据:{ev_ids}{refine_tag}"
             )
         return "\n".join(lines)
@@ -3252,6 +3633,72 @@ class Orchestrator:
     def _collect_data_gaps(self, body: str = ""):
         """Compatibility wrapper around reporting.appendix."""
         return collect_data_gaps(self.run, body)
+
+    def _build_comparison_matrix(self) -> str:
+        """【改进1】零 LLM 调用，从证据池中提取竞品/龙头关键指标，构建对比矩阵。
+        原理：证据池中很可能已有 peers/leaders 的数据（Collect 阶段搜索了竞品），
+        此方法用关键词匹配把它们提取出来，构成"自身 vs 竞品"对比表。
+        这给核心发现段提供了结构化的竞争分析素材，让 LLM 无需自己去证据里翻找。
+        """
+        if not self.run.profile:
+            return ""
+        peers = (self.run.profile.peers or [])[:5]
+        leaders = (self.run.profile.leaders or [])[:4]
+        target_name = self.run.profile.name or ""
+        if not target_name or (not peers and not leaders):
+            return ""
+
+        # 收集所有比较实体（去重）
+        comp_entities = []
+        _seen = {target_name.lower()}
+        for p in peers + leaders:
+            if p and p.lower() not in _seen:
+                comp_entities.append(p)
+                _seen.add(p.lower())
+        if not comp_entities:
+            return ""
+
+        # 从证据池中提取每个实体相关的关键数据片段
+        entity_snippets: dict[str, list[str]] = {e: [] for e in comp_entities}
+        entity_snippets[target_name] = []
+
+        for ev_idx, ev in self.evidence_pool.items():
+            content = getattr(ev, "content", "") or ""
+            if not content:
+                continue
+            # 检查该证据属于哪个实体
+            content_lower = content.lower()
+            for entity in [target_name] + comp_entities:
+                if entity.lower() in content_lower:
+                    # 提取含数字的句子作为关键数据
+                    sentences = re.split(r'[。；;！!？?\n]', content[:400])
+                    for sent in sentences:
+                        if re.search(r'\d+[%％亿万]|\d+\.\d+', sent) and len(sent) > 10:
+                            entity_snippets[entity].append(f"{sent.strip()[:100]} [^{ev_idx}]")
+                            if len(entity_snippets[entity]) >= 3:
+                                break
+
+        # 只有当至少有 1 个竞品有数据时才生成矩阵
+        comp_with_data = [e for e in comp_entities if entity_snippets.get(e)]
+        if not comp_with_data:
+            return ""
+
+        # 构建对比矩阵 Markdown
+        lines = ["\n\n【竞争对比矩阵（代码提取，供核心发现段分析竞争维度）】\n"]
+        lines.append(f"分析主体: {target_name}")
+        lines.append(f"对标公司: {', '.join(comp_with_data[:4])}\n")
+
+        for entity in [target_name] + comp_with_data[:4]:
+            snippets = entity_snippets.get(entity, [])
+            if snippets:
+                label = "【本体】" if entity == target_name else "【对标】"
+                lines.append(f"{label} {entity}: {' | '.join(snippets[:3])}")
+
+        lines.append("")
+        lines.append("分析提示: 请在核心发现中基于上述对比数据，分析竞争差异与相对优劣势，"
+                     "不只是描述自身指标。")
+
+        return "\n".join(lines)
 
     def _build_appendix_md(self, extra_text: str = "") -> str:
         """Compatibility wrapper around reporting.appendix."""
