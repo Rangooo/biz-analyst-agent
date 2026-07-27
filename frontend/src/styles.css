@@ -425,7 +425,7 @@ body {
 }
 
 /* 报告 */
-.report-md { font-size: 13px; line-height: 1.7; }
+.report-md { font-size: 13px; line-height: 1.7; overflow-wrap: break-word; word-wrap: break-word; word-break: break-word; max-width: 100%; }
 .report-md h1 { font-size: 18px; }
 .report-md h2 { font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
 .report-md h3 { font-size: 14px; }
@@ -444,6 +444,7 @@ body {
   border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 12px;
   background: #fff; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
   table-layout: auto; /* 自适应列宽，但单元格内容过长会折行 */
+  word-break: break-word;
 }
 .report-md thead { background: #ede9e0; }  /* 更深的表头底色，强化视觉分层 */
 .report-md th {

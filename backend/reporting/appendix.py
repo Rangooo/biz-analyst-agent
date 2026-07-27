@@ -25,6 +25,9 @@ def format_apa_reference(ev: Evidence, idx: int) -> str:
     stance = "支撑" if ev.supports else "反证"
     tier_str = ev.tier_label
     url_part = ev.source_url or ""
+    # 截断过长 URL（超过 120 字符的 URL 会撑破前端布局）
+    if len(url_part) > 120:
+        url_part = url_part[:120] + "..."
     parts = [f"- **[^{idx}]**: {title}"]
     if year_str:
         parts.append(year_str)
