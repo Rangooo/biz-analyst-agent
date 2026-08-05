@@ -219,6 +219,14 @@ def _inline(text: str, styles: dict) -> str:
 
     ReportLab Paragraph 支持的标签：<b>、<i>、<u>、<font>、<br/> 等，不支持 markdown 原生语法。
     """
+    # 连续脚注 [^38][^41][^62] 必须先合并为一个 <sup>38, 41, 62</sup>，
+    # 否则相邻上标数字会连读成 "384162"（前端渲染同样处理）。
+    def _merge_footnotes(m: "re.Match[str]") -> str:
+        nums = re.findall(r"\[\^(\d+)\]", m.group(0))
+        uniq = list(dict.fromkeys(nums))
+        return "<sup>" + ", ".join(uniq) + "</sup>"
+
+    text = re.sub(r"(?:\[\^\d+\](?!:)){2,}", _merge_footnotes, text)
     # 脚注 [^N] → <sup>N</sup>
     text = re.sub(r"\[\^(\d+)\](?!:)", r"<sup>\1</sup>", text)
     # 引用 [证据N] / [N] → <sup>N</sup>

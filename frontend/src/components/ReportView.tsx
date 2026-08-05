@@ -154,6 +154,17 @@ function _fixEmdashAndVagueWords(md: string): string {
   });
 }
 
+function _mergeConsecutiveFootnotes(md: string): string {
+  // 相邻脚注 [^38][^41][^62] → 合并为单个 [^38,41,62]，避免渲染成上标后
+  // 数字连读（"384162"）。逗号后用窄空格 U+2009 让上标更易读。
+  // 不动脚注定义行（[^N]: ...）——定义行的] 后紧跟 :，不会被本正则匹配。
+  return md.replace(/(?:\[\^\d+\](?!:)){2,}/g, (group) => {
+    const nums = Array.from(group.matchAll(/\[\^(\d+)\]/g)).map(m => m[1]);
+    const unique = [...new Set(nums)];
+    return `[^${unique.join(",\u2009")}]`;
+  });
+}
+
 function CiteMarkdown({ md }: { md: string }) {
   let enriched = md;
   // 1. 先修表格（脚注列内联 + 单元格内纯数字转上标）
@@ -161,9 +172,15 @@ function CiteMarkdown({ md }: { md: string }) {
   // 2. 修含糊词和 —
   enriched = _fixEmdashAndVagueWords(enriched);
   // 3. 标准引用转上标链接
+  //    连续脚注（如 [^38][^41]）必须先合并成带逗号的引用组，否则渲染成紧贴的
+  //    上标数字会连读成 "3841"、表格里 [^35][^47][^36] 会变成 "354736"。
+  enriched = _mergeConsecutiveFootnotes(enriched);
   enriched = enriched
     .replace(/\[证据\s*(\d+)\]/g, (_, n) => `[\u200b${n}](#evidence-${n})`)
-    .replace(/\[\^(\d+)\](?!:)/g, (_, n) => `[\u200b${n}](#evidence-${n})`)
+    .replace(/\[\^([\d,\u2009]+)\](?!:)/g, (_, n) => {
+      const first = String(n).split(",")[0].trim();
+      return `[\u200b${n}](#evidence-${first})`;
+    })
     .replace(/\[(\d+)\]/g, (_, n) => `[\u200b${n}](#evidence-${n})`);
   return <Markdown remarkPlugins={[remarkGfm]}>{enriched}</Markdown>;
 }

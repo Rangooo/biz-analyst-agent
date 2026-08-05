@@ -287,7 +287,9 @@ body {
 .ev-list { list-style: decimal; margin: 8px 0 0 18px; padding: 0; }
 .ev-list li { font-size: 11px; margin-bottom: 6px; color: #5f5e5a; }
 .ev-num { font-weight: 700; color: #185fa5; margin-right: 4px; }
-.report-md a[href^="#evidence-"] { font-size: 9px; vertical-align: super; color: #6f9bcf; padding: 0 1px; text-decoration: none; line-height: 0; }
+.report-md a[href^="#evidence-"] { font-size: 9px; vertical-align: super; color: #6f9bcf; padding: 0 1px; text-decoration: none; line-height: 0; white-space: nowrap; }
+/* 相邻引用组之间留出可辨识的间隔，避免上标数字连读（如 3841） */
+.report-md a[href^="#evidence-"] + a[href^="#evidence-"] { margin-left: 3px; }
 .report-md a[href^="#evidence-"]:hover { color: #185fa5; text-decoration: underline; }
 .tier-tag { display: inline-block; padding: 1px 5px; border-radius: 4px; font-size: 9px; margin-right: 4px; color: #fff; }
 .tier-tag.t1,.tier-tag.t2 { background: #0f6e56; } .tier-tag.t3 { background: #185fa5; } .tier-tag.t4 { background: #7a5cb8; }
@@ -467,9 +469,9 @@ body {
 /* 上标脚注样式：[^N] 转 [N] 链接后渲染为上标小字 */
 .report-md td a[href^="#evidence-"] {
   font-size: 9px; vertical-align: super; color: #185fa5;
-  text-decoration: none; margin-left: 1px; font-weight: 600;
+  text-decoration: none; margin-left: 3px; font-weight: 600;
   border: 1px solid #b5d4f4; border-radius: 3px; padding: 0 3px;
-  background: #eef5fc;
+  background: #eef5fc; white-space: nowrap;
 }
 /* "未披露" 文本用淡色标签样式——通过 JS 后处理加 class */
 .report-md td.undisclosed {
