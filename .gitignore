@@ -83,3 +83,21 @@ backend/memory/
 
 # Local launcher with machine-specific absolute paths
 scripts/start_frontend.py
+
+# Local ad-hoc launchers / eval runner scripts (machine-specific absolute paths)
+backend/_launch_*.py
+backend/_run_*.py
+backend/_eval_*.py
+backend/_start_backend.py
+backend/_formal_eval.py
+
+# Local eval / analysis outputs
+backend/data/*.txt
+backend/data/*.md
+backend/data/eval_comparisons/
+
+# Local one-off maintenance / diagnostic scripts and backups
+_git_*.py
+_backup_work.py
+_backup_uncommitted_*/
+.git.broken-*/

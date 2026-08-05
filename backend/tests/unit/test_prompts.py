@@ -92,6 +92,28 @@ class TestNarrativeGovernance:
         assert "不强制给情景概率或跟踪阈值" in text
         assert "数据可得性与口径" in text
 
+    def test_report_prompts_forbid_meta_leak(self):
+        """回归：4 个 Report 阶段 prompt 的 system 都必须包含「严禁正文泄漏」块，
+        防止 LLM 把元描述/大纲/思考过程写到正文（issue: 用户反馈正文全是思考残片）。"""
+        markers = [
+            "严禁正文泄漏任何「思考/大纲/草稿」",
+            "禁止任何「元描述/大纲/草稿/思考过程/自我指涉」",
+            "禁止「第1段",
+            "禁止「表1、表1b、表2、表3…」",
+            "禁止「如果以…处理会更合适」",
+            "禁止泄漏内部维度编码「C1/C2/C3/C4/C5/C6」",
+        ]
+        builders = [
+            lambda: prompts.narrative_full_prompt("{}", "证据", "洞察", "风险"),
+            lambda: prompts.narrative_facts_prompt("{}", "证据", False, True, False),
+            lambda: prompts.narrative_insights_core_prompt("{}", "洞察", "证据", False, True, False),
+            lambda: prompts.narrative_insights_outlook_prompt("{}", "洞察", "证据", False, True, False),
+        ]
+        for build in builders:
+            text = "\n".join(m["content"] for m in build())
+            for marker in markers:
+                assert marker in text, f"Report prompt 缺少禁止规则: {marker}"
+
 
 class TestQualityEvalPrompt:
     def test_default_score_2(self):

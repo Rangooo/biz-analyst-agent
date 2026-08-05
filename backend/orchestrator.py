@@ -491,6 +491,42 @@ def _is_garbled(snippet: str) -> bool:
     return False
 
 
+def _looks_like_thinking_draft(text: str) -> bool:
+    """正文质量闸门：检测 LLM 输出是否为「思考/规划草稿」而非最终成文。
+
+    弱模型在超长上下文下会输出整篇第一人称规划草稿（"让我先盘点…""现在设计报告结构"）
+    甚至把 prompt 的禁止规则复述进去，正文结构（## 标题）一个都没有。
+    命中 → 调用方应强制最强模型重写；再失败则拒绝落盘，绝不把草稿当报告。
+    """
+    if not text or not text.strip():
+        return False
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # ① 报告必须有至少一个 markdown 二级标题；长文本无任何 ## 标题 = 未成文
+    has_h2 = any(ln.startswith("## ") for ln in lines)
+    if not has_h2 and len(text) > 800:
+        return True
+    # ② 第一人称规划/思考句特征（出现即视为思考草稿）
+    planning_cues = (
+        "我需要", "让我先", "让我再", "让我盘点", "我先盘点", "现在设计",
+        "我再想想", "先理清任务", "设计报告结构", "OK。现在", "我打算",
+        "我的写作计划", "让我梳理", "先盘点", "我来理清",
+    )
+    if any(cue in text for cue in planning_cues):
+        return True
+    return False
+
+
+# 正文质量闸门重试时的强化约束后缀：模型上次输出了思考/规划草稿，
+# 本次要求它直接产出正文（尊重当前 reviewer 模型配置，不强制换模型）。
+_HARD_RETRY_SUFFIX = (
+    "\n\n【重试·硬性要求】你上一次的输出是思考/规划草稿，不是最终正文，已被系统拒绝。"
+    "本次必须直接产出最终报告正文：\n"
+    "- 第一个字符就是 `## 执行摘要`，禁止以任何寒暄、规划或思考句开头\n"
+    "- 禁止出现「我需要/让我先/我先盘点/现在设计/让我再/OK。现在/检查论证链」等第一人称过程描述\n"
+    "- 全篇只包含读者可见的报告 markdown 正文，不包含任何元描述、大纲、草稿或自我指涉\n"
+)
+
+
 # —— 证伪闭环纯逻辑（无副作用，可独立单测）——
 
 # refuted/unverifiable 洞察的置信度天花板。语义：confidence = "洞察成立的可信度"，
@@ -785,15 +821,18 @@ class Orchestrator:
         )
 
     async def _chat_text(self, messages, role="analyst", timeout=120.0, retries=2,
-                         max_tokens: int | None = None):
+                         max_tokens: int | None = None, provider_override: str | None = None):
         """非结构化文本输出（如完整分析文档 narrative）。
         analyst 用用户选的主分析；reviewer 用用户选的终审；其他角色走 role_defaults 路由。
+        provider_override 非 None 时强制使用该 provider（正文质量闸门重写时用最强模型）。
         timeout 可调（reviewer 写长文需更长）。retries 越大底层线程占用越久
         (timeout×(retries+1)×provider数)，长文配合外层 wait_for 时降 retries 防线程池耗尽。"""
         if self.demo:
             from demo_data import demo_chat_json
             return await asyncio.to_thread(demo_chat_json, messages, role=role)
-        if role == "analyst":
+        if provider_override is not None:
+            provider = provider_override
+        elif role == "analyst":
             provider = self.provider
         elif role == "reviewer":
             provider = self.reviewer_provider
@@ -2028,6 +2067,7 @@ class Orchestrator:
             if not isinstance(item, dict):
                 continue
             # 分析师不再输出 falsifiable_condition（由红队在后续阶段基于九维挑战自行判断）
+            is_fallback = bool(item.get("_is_fallback"))
             ev_ids = item.get("evidence_ids", []) or []
             if not isinstance(ev_ids, list):
                 ev_ids = []
@@ -2037,8 +2077,10 @@ class Orchestrator:
                 reasoning=item.get("reasoning", ""),
                 falsifiable_condition="",  # 占位，由红队 _falsify_one 填充
                 confidence=_safe_float(item.get("confidence"), 0.5),
-                is_falsifiable=True,  # 所有洞察默认可证伪（红队判定）
+                is_falsifiable=not is_fallback,  # 占位洞察不进红队（止血：不污染证伪与报告）
             )
+            if is_fallback:
+                ins.needs_human = True  # 占位洞察升级人工：不进报告、UI 提示重试
             for eid in ev_ids:
                 if eid in self.evidence_pool:
                     ins.evidence.append(self.evidence_pool[eid])
@@ -2051,27 +2093,36 @@ class Orchestrator:
             # strength=0 时保留 LLM 自报值（证据尚未充分关联，不惩罚）
             ins.verdict = Verdict.QUESTIONABLE
             self.run.insights.append(ins)
-            yield self._ev("analyze", "insight", f"洞察 · {ins.section}",
-                            ins.claim, insight_id=ins.id,
-                            confidence=ins.confidence)
+            yield self._ev(
+                "analyze", "insight",
+                (f"⚠️ 占位洞察 · {ins.section}" if is_fallback else f"洞察 · {ins.section}"),
+                ins.claim, insight_id=ins.id, confidence=ins.confidence)
         yield self._ev("analyze", "analyze_done", "初步洞察生成",
                         f"共 {len(self.run.insights)} 条，进入证伪")
 
     def _fallback_analyze_items(self, profile: ObjectProfile) -> list[dict]:
-        """Generate minimal analyzable insights when JSON analysis output fails."""
+        """Analyze 阶段 LLM 输出失败时的占位项 —— 只保流程不中断，不伪装成真洞察。
+
+        占位项带 _is_fallback 标记，主循环据此置为 is_falsifiable=False + needs_human=True，
+        从而：不进红队九维挑战、不进 _select_report_insights、不污染报告正文（止血）。
+        """
         sections = (profile.sections or profile.key_questions or ["综合判断"])[:4]
         ev_ids = sorted(self.evidence_pool)[:3]
         items = []
         for section in sections:
             items.append({
                 "section": section,
-                "claim": f"{profile.name}在「{section}」维度存在需要进一步验证的关键信号",
+                "claim": (
+                    f"{profile.name}的「{section}」维度分析未完成（LLM 输出解析失败），"
+                    f"已保留 {len(self.evidence_pool)} 条证据，请人工重试或补充分析。"
+                ),
                 "reasoning": (
-                    f"分析阶段未拿到稳定 JSON 输出，但采集阶段已有 {len(self.evidence_pool)} 条证据。"
-                    f"该维度需要结合已采集证据继续做证伪与补强，避免因模型格式错误中断完整流程。"
+                    f"占位洞察：Analyze 阶段 LLM 未产出稳定 JSON，为保证流程不中断暂以本项占位。"
+                    f"该维度（{section}）需人工复核后重新分析，本项不参与证伪与报告。"
                 ),
                 "evidence_ids": ev_ids,
-                "confidence": 0.35,
+                "confidence": 0.0,
+                "_is_fallback": True,
             })
         return items
 
@@ -2783,11 +2834,36 @@ class Orchestrator:
                     weak_evidence_mode=_weak_evidence_mode),
                 role="reviewer", timeout=480.0, retries=1,
                 max_tokens=(
-                    4800 if _weak_evidence_mode
-                    else (6800 if is_ind else 4200)
+                    6200 if _weak_evidence_mode
+                    else (9500 if is_ind else 6000)
                 )), timeout=500.0)
             _v2_text = self._strip_preamble(_extract_text(_v2_raw))
             if _v2_text and len(_v2_text) > 500:
+                # —— 正文质量闸门：检测思考/规划草稿，命中则强化约束后重写（尊重当前 reviewer 模型）——
+                if _looks_like_thinking_draft(_v2_text):
+                    yield self._ev(
+                        "report", "thinking", "⚠️ V2正文质量闸门·检测到思考草稿",
+                        f"输出 {len(_v2_text)} 字符无正文结构，强化约束后重写",
+                    )
+                    _retry_msgs = prompts.narrative_full_prompt(
+                        profile_json, full_digest, insights_digest, risk_digest,
+                        same_src, is_pub, is_ind,
+                        financials_block=financials_block,
+                        report_constraints=report_constraints or None,
+                        writing_contract=writing_contract,
+                        weak_evidence_mode=_weak_evidence_mode)
+                    _retry_msgs[-1] = dict(_retry_msgs[-1])
+                    _retry_msgs[-1]["content"] = _retry_msgs[-1]["content"] + _HARD_RETRY_SUFFIX
+                    _v2_raw = await asyncio.wait_for(self._chat_text(
+                        _retry_msgs, role="reviewer", timeout=480.0, retries=1,
+                        max_tokens=(
+                            6200 if _weak_evidence_mode
+                            else (9500 if is_ind else 6000)
+                        )), timeout=500.0)
+                    _v2_text = self._strip_preamble(_extract_text(_v2_raw))
+                    if not _v2_text or len(_v2_text) <= 500 or _looks_like_thinking_draft(_v2_text):
+                        raise RuntimeError(
+                            "正文质量闸门：重写后仍为思考草稿，拒绝落盘")
                 # 结构校验+自动修复
                 from datetime import date as _date
                 _today = _date.today().isoformat()
@@ -3427,6 +3503,8 @@ class Orchestrator:
             return any(cue in r for cue in ANALYTICAL_CUES)
 
         for ins in self.run.insights:
+            if ins.needs_human:  # 占位/需人工介入的洞察不自动进入报告（止血）
+                continue
             # 不可证伪的洞察不直接排除——如果是逻辑推导型（推理充分且含分析性词汇），仍可进入报告
             if not ins.is_falsifiable:
                 # 逻辑推导型洞察：推理>80字 + 含分析性词汇 + 有证据引用 → 保留进核心段标注"逻辑推导型"

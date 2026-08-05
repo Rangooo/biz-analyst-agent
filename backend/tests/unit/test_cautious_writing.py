@@ -44,7 +44,7 @@ def test_cautious_prompt_forbids_filling_three_findings():
         weak_evidence_mode=True,
     )
     prompt = "\n".join(message["content"] for message in messages)
-    assert "不得凑足3条" in prompt
+    assert "不得凑足更多" in prompt
     assert "审慎模式" in prompt
 
 
