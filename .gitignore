@@ -98,6 +98,11 @@ backend/data/eval_comparisons/
 
 # Local one-off maintenance / diagnostic scripts and backups
 _git_*.py
+_check_*.py
+_verify_*.py
+_restart_*.py
+backend/_verify_*.py
+backend/_check_*.py
 _backup_work.py
 _backup_uncommitted_*/
 .git.broken-*/
